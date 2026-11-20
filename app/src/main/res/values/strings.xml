@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">Liquid Music</string>
+    <string name="tagline">Optical Glass Streaming &amp; Local Audio</string>
+    <string name="tab_home">Home</string>
+    <string name="tab_search">Search</string>
+    <string name="tab_library">Library</string>
+    <string name="tab_sound_lab">Sound Lab</string>
+    <string name="tab_profile">Profile</string>
+    <string name="onboarding_sign_in">Sign In / Create Account</string>
+    <string name="onboarding_google_demo">Continue with Google (Demo)</string>
+    <string name="onboarding_skip_guest">Skip for Now (Guest Mode)</string>
+    <string name="search_hint">Search songs, artists, or local files…</string>
+    <string name="vibe_dj_title">Gemini AI Vibe DJ</string>
+    <string name="vibe_dj_hint">Describe a mood… e.g. midnight highway synth drive</string>
+    <string name="vibe_dj_generate">Curate Vibe</string>
+    <string name="local_permission_title">Unlock Local Audio Library</string>
+    <string name="local_permission_body">Grant audio access to mix your on-device MP3, FLAC, WAV, and M4A tracks seamlessly with streamed songs.</string>
+    <string name="local_permission_grant">Allow Audio Access</string>
+    <string name="share_wrapped_chooser">Share Liquid Wrapped</string>
+</resources>

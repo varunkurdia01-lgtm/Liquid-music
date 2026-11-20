@@ -1,0 +1,6 @@
+{
+  "name": "Liquid Music",
+  "description": "Native Android streaming and local audio player with Liquid Glass refraction, Media3 ExoPlayer, synced lyrics, DSP Sound Lab, Gemini AI Vibe DJ, and Anytime Wrapped.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
