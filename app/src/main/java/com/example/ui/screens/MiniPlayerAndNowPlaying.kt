@@ -6,6 +6,13 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -89,8 +96,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -121,7 +133,10 @@ import com.example.ui.glass.LiquidGlassButton
 import com.example.ui.glass.LiquidGlassSurface
 import com.example.ui.glass.LiquidGlassToggle
 import com.example.ui.glass.LocalLiquidBackdrop
+import com.example.ui.glass.MiniPlayerSpringSpecs
 import com.example.ui.glass.TrackArtwork
+import com.example.ui.glass.miniPlayerPillGestures
+import com.example.ui.glass.rememberMiniPlayerPillPhysics
 import com.example.ui.theme.DeepVoid
 import com.example.ui.theme.EmeraldPulse
 import com.example.ui.theme.FrostWhite
@@ -135,8 +150,12 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.launch
 
 /**
- * Floating Liquid Glass Mini-Player pinned directly above the iOS 26 bottom tab capsule.
- * Supports horizontal swipe to skip Next/Previous with parallax + vertical swipe/tap to expand.
+ * Floating iOS 26-style Liquid Glass Mini-Player Pill pinned cleanly above the bottom tab capsule.
+ * Powered by [MiniPlayerPillPhysicsState] high-stiffness Compose spring physics:
+ * - Instant tactile press depression + 3D perspective tilt + thumb-tracking specular glass rim
+ * - Rubber-banded horizontal swipe with haptic detent & velocity-preserving spring snap-back
+ * - Elastic vertical lift gesture to launch Full-Bleed Now Playing
+ * - Kinetic spring track-swap transitions and micro-bouncing inner playback controls
  */
 @Composable
 fun FloatingLiquidMiniPlayer(
@@ -152,118 +171,205 @@ fun FloatingLiquidMiniPlayer(
     val track = playerState.currentTrack ?: return
     val palette = LocalLiquidPalette.current
     val haptic = LocalHapticFeedback.current
-    val scope = rememberCoroutineScope()
-    val swipeOffsetX = remember { Animatable(0f) }
+    val physics = rememberMiniPlayerPillPhysics()
 
-    val progressFraction = if (playerState.durationMs > 0L) {
+    var previousTrackId by remember { mutableStateOf(track.id) }
+    LaunchedEffect(track.id) {
+        if (track.id != previousTrackId) {
+            previousTrackId = track.id
+            physics.pulseTrackChange()
+        }
+    }
+
+    val rawProgress = if (playerState.durationMs > 0L) {
         (playerState.positionMs.toFloat() / playerState.durationMs.toFloat()).coerceIn(0f, 1f)
     } else 0f
+    val animatedProgress by animateFloatAsState(
+        targetValue = rawProgress,
+        animationSpec = spring(dampingRatio = 0.86f, stiffness = 480f),
+        label = "miniPlayerProgress"
+    )
+
+    val playButtonScale = remember { Animatable(1f) }
+    val likeButtonScale = remember { Animatable(1f) }
+    val controlScope = rememberCoroutineScope()
+
+    val horizontalProgress = physics.horizontalProgress
+    val skipHintAlpha = ((kotlin.math.abs(horizontalProgress) - 0.35f) / 0.65f).coerceIn(0f, 1f)
 
     LiquidGlassSurface(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp)
+            .padding(horizontal = 14.dp)
             .height(66.dp)
             .testTag("floating_mini_player")
+            .onSizeChanged { physics.pillWidthPx = it.width.toFloat() }
             .graphicsLayer {
-                translationX = swipeOffsetX.value * 0.25f
+                with(physics) { applyPillPhysics() }
             }
-            .pointerInput(track.id) {
-                detectHorizontalDragGestures(
-                    onDragEnd = {
-                        val delta = swipeOffsetX.value
-                        scope.launch {
-                            if (delta < -90f) {
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                onSkipNext()
-                            } else if (delta > 90f) {
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                onSkipPrevious()
-                            }
-                            swipeOffsetX.animateTo(0f, spring(dampingRatio = 0.68f, stiffness = 420f))
+            .miniPlayerPillGestures(
+                key = track.id,
+                physics = physics,
+                haptic = haptic,
+                onExpand = onExpand,
+                onSkipNext = onSkipNext,
+                onSkipPrevious = onSkipPrevious
+            ),
+        cornerRadius = 33.dp,
+        tintColor = Color(0xFF10131C),
+        surfaceAlpha = 0.58f,
+        highlightAccent = palette.primaryGlow,
+        refractionBoost = 1.15f
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .drawWithContent {
+                    drawContent()
+                    // iOS 26 directional specular rim highlight that glides smoothly under your thumb
+                    val focusX = size.width * physics.specularFraction.value
+                    val glowBoost = 0.36f + 0.38f * physics.touchGlow.value
+                    val radiusPx = size.height / 2f
+                    drawRoundRect(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = glowBoost),
+                                Color.White.copy(alpha = glowBoost * 0.28f),
+                                Color.Transparent
+                            ),
+                            center = Offset(focusX, 0f),
+                            radius = size.width * 0.58f
+                        ),
+                        cornerRadius = CornerRadius(radiusPx, radiusPx),
+                        style = Stroke(width = 1.15.dp.toPx())
+                    )
+                }
+        ) {
+            // Subtle directional skip detent indicator during horizontal drag
+            if (skipHintAlpha > 0.02f) {
+                val isSkippingNext = horizontalProgress < 0f
+                Icon(
+                    imageVector = if (isSkippingNext) Icons.Rounded.SkipNext else Icons.Rounded.SkipPrevious,
+                    contentDescription = null,
+                    tint = FrostWhite.copy(alpha = skipHintAlpha * 0.85f),
+                    modifier = Modifier
+                        .align(if (isSkippingNext) Alignment.CenterEnd else Alignment.CenterStart)
+                        .padding(horizontal = 14.dp)
+                        .size(20.dp)
+                        .graphicsLayer {
+                            val s = 0.75f + 0.30f * skipHintAlpha
+                            scaleX = s
+                            scaleY = s
                         }
-                    },
-                    onDragCancel = {
-                        scope.launch { swipeOffsetX.animateTo(0f, spring()) }
-                    },
-                    onHorizontalDrag = { _, dragAmount ->
-                        scope.launch {
-                            swipeOffsetX.snapTo((swipeOffsetX.value + dragAmount).coerceIn(-180f, 180f))
-                        }
-                    }
                 )
             }
-            .pointerInput(Unit) {
-                detectVerticalDragGestures { _, dragAmount ->
-                    if (dragAmount < -18f) {
-                        onExpand()
-                    }
-                }
-            }
-            .clickable(onClick = onExpand),
-        cornerRadius = 24.dp,
-        tintColor = Color(0xFF0E1426),
-        surfaceAlpha = 0.78f,
-        highlightAccent = palette.primaryGlow
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 10.dp),
+                    .padding(start = 10.dp, end = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TrackArtwork(
-                    artworkUrl = track.artworkUrl,
-                    contentDescription = track.title,
-                    cornerRadius = 14.dp,
-                    modifier = Modifier
-                        .size(46.dp)
-                        .graphicsLayer {
-                            translationX = swipeOffsetX.value * 0.14f
+                AnimatedContent(
+                    targetState = track,
+                    transitionSpec = {
+                        val dir = if (physics.lastSkipDirection > 0f) -1 else 1
+                        (slideInHorizontally(
+                            animationSpec = spring(dampingRatio = 0.76f, stiffness = 650f),
+                            initialOffsetX = { fullWidth -> dir * (fullWidth / 4) }
+                        ) + fadeIn(spring(stiffness = 650f))) togetherWith
+                            (slideOutHorizontally(
+                                animationSpec = spring(dampingRatio = 0.82f, stiffness = 680f),
+                                targetOffsetX = { fullWidth -> -dir * (fullWidth / 4) }
+                            ) + fadeOut(spring(stiffness = 700f)))
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = "miniPlayerTrackSwap"
+                ) { active ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        TrackArtwork(
+                            artworkUrl = active.artworkUrl,
+                            contentDescription = active.title,
+                            cornerRadius = 23.dp,
+                            modifier = Modifier
+                                .size(46.dp)
+                                .graphicsLayer {
+                                    translationX = physics.offsetX.value * 0.22f
+                                    val liftScale = 1f + 0.04f * physics.verticalLiftProgress
+                                    scaleX = liftScale
+                                    scaleY = liftScale
+                                }
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .graphicsLayer {
+                                    translationX = physics.offsetX.value * 0.14f
+                                }
+                        ) {
+                            Text(
+                                text = active.title,
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = FrostWhite,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = active.artist,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MistSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = track.title,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = FrostWhite,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = track.artist,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MistSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    }
                 }
 
                 IconButton(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        controlScope.launch {
+                            likeButtonScale.snapTo(0.76f)
+                            likeButtonScale.animateTo(1f, MiniPlayerSpringSpecs.ControlBounce)
+                        }
                         onToggleLike()
                     },
-                    modifier = Modifier.size(40.dp)
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("mini_player_like_button")
+                        .graphicsLayer {
+                            scaleX = likeButtonScale.value
+                            scaleY = likeButtonScale.value
+                        }
                 ) {
                     Icon(
                         imageVector = if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
                         contentDescription = "Like current track",
                         tint = if (isLiked) LuminousRose else MistSecondary,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(21.dp)
                     )
                 }
 
                 IconButton(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        controlScope.launch {
+                            playButtonScale.snapTo(0.78f)
+                            playButtonScale.animateTo(1f, MiniPlayerSpringSpecs.ControlBounce)
+                        }
                         onTogglePlayPause()
                     },
                     modifier = Modifier
-                        .size(44.dp)
+                        .size(48.dp)
                         .testTag("mini_player_play_pause")
+                        .graphicsLayer {
+                            scaleX = playButtonScale.value
+                            scaleY = playButtonScale.value
+                        }
                 ) {
                     if (playerState.isBuffering) {
                         CircularProgressIndicator(
@@ -272,28 +378,46 @@ fun FloatingLiquidMiniPlayer(
                             modifier = Modifier.size(20.dp)
                         )
                     } else {
-                        Icon(
-                            imageVector = if (playerState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            contentDescription = if (playerState.isPlaying) "Pause" else "Play",
-                            tint = FrostWhite,
-                            modifier = Modifier.size(26.dp)
-                        )
+                        AnimatedContent(
+                            targetState = playerState.isPlaying,
+                            transitionSpec = {
+                                (scaleIn(
+                                    initialScale = 0.72f,
+                                    animationSpec = MiniPlayerSpringSpecs.ControlBounce
+                                ) + fadeIn(spring(stiffness = 750f))) togetherWith
+                                    (scaleOut(
+                                        targetScale = 0.72f,
+                                        animationSpec = MiniPlayerSpringSpecs.ControlBounce
+                                    ) + fadeOut(spring(stiffness = 750f)))
+                            },
+                            label = "miniPlayerPlayPauseIcon"
+                        ) { playing ->
+                            Icon(
+                                imageVector = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                contentDescription = if (playing) "Pause" else "Play",
+                                tint = FrostWhite,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
                     }
                 }
             }
 
-            // Ultra-thin luminous progress line along bottom edge
+            // Ultra-thin luminous progress line inset neatly inside the capsule pill bottom curve
             Box(
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
+                    .align(Alignment.BottomCenter)
                     .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
                     .height(2.5.dp)
+                    .clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.08f))
             ) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(progressFraction)
+                        .fillMaxWidth(animatedProgress)
                         .height(2.5.dp)
+                        .clip(CircleShape)
                         .background(
                             Brush.horizontalGradient(listOf(palette.secondaryGlow, palette.primaryGlow))
                         )

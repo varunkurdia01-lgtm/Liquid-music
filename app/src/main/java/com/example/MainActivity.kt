@@ -16,6 +16,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
@@ -58,6 +60,7 @@ import com.example.domain.model.Track
 import com.example.ui.glass.LiquidAuroraCanvas
 import com.example.ui.glass.LiquidGlassBottomTabBar
 import com.example.ui.glass.LocalLiquidBackdrop
+import com.example.ui.glass.MiniPlayerSpringSpecs
 import com.example.ui.screens.AddToPlaylistSheet
 import com.example.ui.screens.AlbumArtistDetailOverlay
 import com.example.ui.screens.EchoAddonManagerSheet
@@ -567,8 +570,20 @@ private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
                     ) {
                         AnimatedVisibility(
                             visible = hasActiveTrack,
-                            enter = slideInVertically { it / 2 } + fadeIn(),
-                            exit = slideOutVertically { it / 2 } + fadeOut()
+                            enter = slideInVertically(
+                                initialOffsetY = { (it * 0.65f).toInt() },
+                                animationSpec = MiniPlayerSpringSpecs.PillEntranceOffset
+                            ) + scaleIn(
+                                initialScale = 0.90f,
+                                animationSpec = MiniPlayerSpringSpecs.PillEntranceScale
+                            ) + fadeIn(spring(stiffness = 620f)),
+                            exit = slideOutVertically(
+                                targetOffsetY = { (it * 0.65f).toInt() },
+                                animationSpec = MiniPlayerSpringSpecs.PillEntranceOffset
+                            ) + scaleOut(
+                                targetScale = 0.92f,
+                                animationSpec = MiniPlayerSpringSpecs.PillEntranceScale
+                            ) + fadeOut(spring(stiffness = 680f))
                         ) {
                             val activeTrack = playerState.currentTrack
                             if (activeTrack != null) {
@@ -602,12 +617,12 @@ private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
                     visible = isNowPlayingExpanded && playerState.currentTrack != null,
                     enter = slideInVertically(
                         initialOffsetY = { it },
-                        animationSpec = spring(dampingRatio = 0.82f, stiffness = 340f)
-                    ) + fadeIn(tween(200)),
+                        animationSpec = MiniPlayerSpringSpecs.SheetExpandOffset
+                    ) + fadeIn(spring(stiffness = 560f)),
                     exit = slideOutVertically(
                         targetOffsetY = { it },
-                        animationSpec = spring(dampingRatio = 0.88f, stiffness = 420f)
-                    ) + fadeOut(tween(180))
+                        animationSpec = MiniPlayerSpringSpecs.SheetDismissOffset
+                    ) + fadeOut(spring(stiffness = 640f))
                 ) {
                     val activeTrack = playerState.currentTrack
                     if (activeTrack != null) {
