@@ -24,8 +24,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -40,18 +45,26 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.example.domain.model.BrowseLayoutType
+import com.example.domain.model.BrowseSection
+import com.example.domain.model.MusicSource
 import com.example.domain.model.SourceType
 import com.example.domain.model.Track
 import com.example.domain.model.UserProfile
+import com.example.ui.components.EchoHomeModePill
+import com.example.ui.components.EchoSurfaceCard
 import com.example.ui.glass.AnimatedWaveformBars
+import com.example.ui.glass.LiquidGlassButton
 import com.example.ui.glass.LiquidGlassChip
 import com.example.ui.glass.LiquidGlassSurface
 import com.example.ui.glass.TrackArtwork
 import com.example.ui.theme.FrostWhite
 import com.example.ui.theme.LocalLiquidPalette
+import com.example.ui.theme.LuminousRose
 import com.example.ui.theme.MistSecondary
 import com.example.ui.viewmodel.DiscoveryUiState
 import java.util.Calendar
@@ -62,12 +75,21 @@ fun HomeScreen(
     userProfile: UserProfile,
     activeTrackId: String?,
     isPlaying: Boolean,
+    likedTrackIds: Set<String>,
+    downloadedTrackIds: Set<String>,
     bottomPadding: Dp,
     onMoodSelected: (String) -> Unit,
     onPlayQueue: (List<Track>, Int) -> Unit,
+    onStartRadio: (Track) -> Unit,
+    onToggleLike: (Track) -> Unit,
+    onToggleDownload: (Track) -> Unit,
     onAddTrackToPlaylist: (Track) -> Unit,
+    onOpenAlbum: (String, MusicSource) -> Unit,
+    onOpenArtist: (String, MusicSource) -> Unit,
     onOpenProfile: () -> Unit,
     onOpenSoundLab: () -> Unit,
+    onSurpriseMe: () -> Unit = {},
+    onOpenMusicFlow: () -> Unit = {},
     onRefresh: () -> Unit
 ) {
     val palette = LocalLiquidPalette.current
@@ -79,7 +101,10 @@ fun HomeScreen(
             else -> "Late Night Aura"
         }
     }
-    val moods = listOf("All", "Pop", "Hip-Hop", "Electronic", "Chill", "Local Files")
+    val moodLabels = remember(uiState.moods) {
+        val dynamic = uiState.moods.map { it.title }
+        (listOf("All") + dynamic + listOf("Local Files")).distinct()
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -88,7 +113,7 @@ fun HomeScreen(
             .testTag("home_screen_list"),
         contentPadding = PaddingValues(top = 16.dp, bottom = bottomPadding)
     ) {
-        // Header Row: Time-of-day Greeting + Sound Lab quick trigger + Glass Avatar
+        // Header Row: Greeting + Active Provider Status + Surprise Me + Sound Lab + Settings Button
         item(key = "home_header") {
             Row(
                 modifier = Modifier
@@ -98,11 +123,29 @@ fun HomeScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = greeting.uppercase(),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = palette.secondaryGlow
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = greeting.uppercase(),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = palette.secondaryGlow
+                        )
+                        Box(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(Color(0x55131B32))
+                                .border(1.dp, palette.primaryGlow.copy(alpha = 0.28f), CircleShape)
+                                .padding(horizontal = 7.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = uiState.activeCatalogSource.displayName,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.primaryGlow
+                            )
+                        }
+                    }
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = userProfile.displayName,
@@ -114,13 +157,30 @@ fun HomeScreen(
                 }
 
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(
+                        onClick = onSurpriseMe,
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(Color(0x55141A2E))
+                            .border(1.dp, palette.secondaryGlow.copy(alpha = 0.35f), CircleShape)
+                            .testTag("home_surprise_me_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Shuffle,
+                            contentDescription = "Surprise Me Shuffle",
+                            tint = palette.secondaryGlow,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+
+                    IconButton(
                         onClick = onRefresh,
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(42.dp)
                             .clip(CircleShape)
                             .background(Color(0x55141A2E))
                             .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
@@ -130,14 +190,14 @@ fun HomeScreen(
                             imageVector = Icons.Rounded.Refresh,
                             contentDescription = "Refresh Discovery",
                             tint = FrostWhite,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(19.dp)
                         )
                     }
 
                     IconButton(
                         onClick = onOpenSoundLab,
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(42.dp)
                             .clip(CircleShape)
                             .background(Color(0x55141A2E))
                             .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
@@ -147,13 +207,14 @@ fun HomeScreen(
                             imageVector = Icons.Rounded.Tune,
                             contentDescription = "Open Sound Lab",
                             tint = palette.primaryGlow,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(19.dp)
                         )
                     }
 
-                    Box(
+                    IconButton(
+                        onClick = onOpenProfile,
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(42.dp)
                             .clip(CircleShape)
                             .background(
                                 Brush.linearGradient(
@@ -161,34 +222,85 @@ fun HomeScreen(
                                 )
                             )
                             .border(1.dp, palette.primaryGlow.copy(alpha = 0.6f), CircleShape)
-                            .clickable(onClick = onOpenProfile)
-                            .testTag("home_profile_avatar"),
-                        contentAlignment = Alignment.Center
+                            .testTag("home_settings_button")
                     ) {
-                        Text(
-                            text = userProfile.displayName.take(1).uppercase(),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = FrostWhite
+                        Icon(
+                            imageVector = Icons.Rounded.Settings,
+                            contentDescription = "Open Echo Settings",
+                            tint = FrostWhite,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
             }
         }
 
-        // Mood / Genre Filter Glass Chips
-        item(key = "home_mood_chips") {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 18.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+        // Echo Home | Flow Mode Switcher Row
+        item(key = "home_mode_switcher") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                items(moods, key = { it }) { mood ->
-                    LiquidGlassChip(
-                        label = mood,
-                        selected = uiState.selectedHomeMood == mood,
-                        onClick = { onMoodSelected(mood) },
-                        modifier = Modifier.testTag("mood_chip_${mood.lowercase().replace(" ", "_")}")
+                EchoHomeModePill(
+                    isFlowActive = false,
+                    onSelectHome = {},
+                    onSelectFlow = onOpenMusicFlow
+                )
+                Text(
+                    text = "Swipe Flow for vertical discovery",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MistSecondary
+                )
+            }
+        }
+
+        // Provider Notice Pill
+        if (!uiState.providerNotice.isNullOrBlank()) {
+            item(key = "provider_notice") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 10.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0x4D141C32))
+                        .border(1.dp, palette.secondaryGlow.copy(alpha = 0.32f), RoundedCornerShape(14.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Rounded.CloudDone, contentDescription = null, tint = palette.secondaryGlow, modifier = Modifier.size(16.dp))
+                    Text(
+                        text = uiState.providerNotice,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MistSecondary
                     )
                 }
+            }
+        }
+
+        // Dynamic Mood & Genre Glass Chips (Echo Music Chip Cloud)
+        if (uiState.showMoodAndGenres) {
+            item(key = "home_mood_chips") {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(moodLabels, key = { it }) { mood ->
+                        LiquidGlassChip(
+                            label = mood,
+                            selected = uiState.selectedHomeMood == mood,
+                            onClick = { onMoodSelected(mood) },
+                            modifier = Modifier.testTag("mood_chip_${mood.lowercase().replace(" ", "_")}")
+                        )
+                    }
+                }
+            }
+        } else {
+            item(key = "home_spacer") {
+                Spacer(modifier = Modifier.height(14.dp))
             }
         }
 
@@ -197,147 +309,198 @@ fun HomeScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(220.dp),
+                        .height(240.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator(color = palette.secondaryGlow, strokeWidth = 2.5.dp)
                         Spacer(modifier = Modifier.height(12.dp))
-                        Text("Tuning your Liquid Aurora feed…", color = MistSecondary, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = "Fetching live YouTube Music Home, Charts & New Releases…",
+                            color = MistSecondary,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+            }
+        } else if (uiState.homeError != null && uiState.browseSections.isEmpty()) {
+            item(key = "home_error") {
+                LiquidGlassSurface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    cornerRadius = 24.dp,
+                    useRefractionShell = false
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text("Could not reach streaming providers", style = MaterialTheme.typography.titleLarge, color = FrostWhite)
+                        Text(uiState.homeError, style = MaterialTheme.typography.bodySmall, color = LuminousRose)
+                        LiquidGlassButton(
+                            onClick = onRefresh,
+                            accentGlow = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp)
+                                .testTag("home_retry_button")
+                        ) {
+                            Text("Retry Catalog", style = MaterialTheme.typography.labelLarge, color = FrostWhite, modifier = Modifier.align(Alignment.Center))
+                        }
                     }
                 }
             }
         } else {
-            val mood = uiState.selectedHomeMood
+            val selectedMood = uiState.selectedHomeMood
 
-            // 2-Column Quick Picks Grid (6 items)
-            if ((mood == "All" || mood == "Pop") && uiState.quickPicks.isNotEmpty()) {
-                item(key = "quick_picks_section") {
-                    SectionHeader(title = "Quick Picks", subtitle = "Tap for instant 320 kbps playback")
-                    val rows = uiState.quickPicks.chunked(2)
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        rows.forEach { pair ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                pair.forEach { track ->
-                                    val idx = uiState.quickPicks.indexOf(track)
-                                    QuickPickTile(
-                                        track = track,
-                                        isActive = track.id == activeTrackId,
-                                        isPlaying = isPlaying && track.id == activeTrackId,
-                                        onClick = { onPlayQueue(uiState.quickPicks, idx) },
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                                if (pair.size == 1) Spacer(modifier = Modifier.weight(1f))
-                            }
+            // Specific Mood Filter Feed
+            if (selectedMood != "All" && selectedMood != "Local Files") {
+                item(key = "mood_header") {
+                    SectionHeader(
+                        title = "$selectedMood Mix",
+                        subtitle = "Live tracks curated from ${uiState.activeCatalogSource.displayName}"
+                    )
+                }
+                if (uiState.isLoadingMood) {
+                    item(key = "mood_loading") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(160.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(color = palette.secondaryGlow, strokeWidth = 2.5.dp)
                         }
                     }
-                    Spacer(modifier = Modifier.height(24.dp))
+                } else {
+                    itemsIndexed(uiState.moodTracks, key = { idx, t -> "mood_${idx}_${t.id}" }) { idx, track ->
+                        Box(modifier = Modifier.padding(horizontal = 20.dp, vertical = 5.dp)) {
+                            TrackRowItem(
+                                track = track,
+                                isActive = track.id == activeTrackId,
+                                isPlaying = isPlaying && track.id == activeTrackId,
+                                isLiked = likedTrackIds.contains(track.id),
+                                isDownloaded = downloadedTrackIds.contains(track.id),
+                                onClick = { onPlayQueue(uiState.moodTracks, idx) },
+                                onToggleLike = { onToggleLike(track) },
+                                onToggleDownload = { onToggleDownload(track) },
+                                onAddToPlaylist = { onAddTrackToPlaylist(track) },
+                                trailingExtra = {
+                                    IconButton(onClick = { onStartRadio(track) }, modifier = Modifier.size(38.dp)) {
+                                        Icon(Icons.Rounded.Radio, contentDescription = "Start Radio", tint = palette.secondaryGlow, modifier = Modifier.size(19.dp))
+                                    }
+                                }
+                            )
+                        }
+                    }
                 }
             }
 
-            // Jump Back In (from Room listening history)
-            if (mood == "All" && uiState.jumpBackIn.isNotEmpty()) {
-                item(key = "shelf_jump_back_in") {
-                    TrackCarouselShelf(
-                        title = "Jump Back In",
-                        subtitle = "Recently spun in your sessions",
-                        tracks = uiState.jumpBackIn,
+            // Full Echo Music Home & Explore Sections
+            if (selectedMood == "All") {
+                // 1. Echo Quick Picks (4-row horizontal Speed Dial grid)
+                if (uiState.showSpeedDial && uiState.quickPicks.isNotEmpty()) {
+                    item(key = "echo_quick_picks_section") {
+                        EchoQuickPicksGridSection(
+                            tracks = uiState.quickPicks,
+                            activeTrackId = activeTrackId,
+                            isPlaying = isPlaying,
+                            onPlayQueue = onPlayQueue,
+                            onSurpriseMe = onSurpriseMe
+                        )
+                    }
+                }
+
+                // 2. Continue Listening / Keep Listening (from Room listening history)
+                if (uiState.jumpBackIn.isNotEmpty()) {
+                    item(key = "shelf_jump_back_in") {
+                        TrackCarouselShelf(
+                            title = "Keep Listening",
+                            subtitle = "Your recent & most played rotations",
+                            tracks = uiState.jumpBackIn,
+                            activeTrackId = activeTrackId,
+                            isPlaying = isPlaying,
+                            onPlay = onPlayQueue,
+                            onStartRadio = onStartRadio,
+                            onAddToPlaylist = onAddTrackToPlaylist
+                        )
+                    }
+                }
+
+                // 3. Similar to [Your Recent Song] (Echo Music SimilarRecommendation shelf)
+                if (uiState.similarRecommendationTracks.isNotEmpty() && uiState.similarRecommendationTitle.isNotBlank()) {
+                    item(key = "shelf_similar_recommendation") {
+                        TrackCarouselShelf(
+                            title = uiState.similarRecommendationTitle,
+                            subtitle = "From your taste by Echo Music",
+                            tracks = uiState.similarRecommendationTracks,
+                            activeTrackId = activeTrackId,
+                            isPlaying = isPlaying,
+                            onPlay = onPlayQueue,
+                            onStartRadio = onStartRadio,
+                            onAddToPlaylist = onAddTrackToPlaylist
+                        )
+                    }
+                }
+
+                // 4. Forgotten Favorites (Echo Music Forgotten Favorites shelf)
+                if (uiState.forgottenFavorites.isNotEmpty()) {
+                    item(key = "shelf_forgotten_favorites") {
+                        TrackCarouselShelf(
+                            title = "Forgotten Favorites",
+                            subtitle = "Rediscover tracks from your library",
+                            tracks = uiState.forgottenFavorites,
+                            activeTrackId = activeTrackId,
+                            isPlaying = isPlaying,
+                            onPlay = onPlayQueue,
+                            onStartRadio = onStartRadio,
+                            onAddToPlaylist = onAddTrackToPlaylist
+                        )
+                    }
+                }
+
+                // 5. Dynamic Browse Sections from YouTube Music InnerTube (Charts, New Releases, Carousels)
+                items(
+                    items = uiState.browseSections.filterNot {
+                        uiState.showSpeedDial && it.layoutType == BrowseLayoutType.QUICK_PICKS_GRID && it.title.equals("Quick Picks", ignoreCase = true)
+                    },
+                    key = { it.id }
+                ) { section ->
+                    BrowseSectionRenderer(
+                        section = section,
                         activeTrackId = activeTrackId,
                         isPlaying = isPlaying,
-                        onPlay = onPlayQueue,
-                        onAddToPlaylist = onAddTrackToPlaylist
+                        onPlayQueue = onPlayQueue,
+                        onStartRadio = onStartRadio,
+                        onAddTrackToPlaylist = onAddTrackToPlaylist,
+                        onOpenAlbum = onOpenAlbum,
+                        onOpenArtist = onOpenArtist
                     )
                 }
             }
 
-            // Global Pop Hits
-            if (mood == "All" || mood == "Pop") {
-                item(key = "shelf_global_pop") {
-                    TrackCarouselShelf(
-                        title = "Global Pop Hits",
-                        subtitle = "Chart-topping anthems & crystal vocals",
-                        tracks = uiState.globalPop,
-                        activeTrackId = activeTrackId,
-                        isPlaying = isPlaying,
-                        onPlay = onPlayQueue,
-                        onAddToPlaylist = onAddTrackToPlaylist
-                    )
-                }
-            }
-
-            // Hip-Hop & Rap Pulse
-            if (mood == "All" || mood == "Hip-Hop") {
-                item(key = "shelf_hiphop") {
-                    TrackCarouselShelf(
-                        title = "Hip-Hop & Rap Pulse",
-                        subtitle = "Heavy 808s, rhythmic flows & studio bass",
-                        tracks = uiState.hipHopPulse,
-                        activeTrackId = activeTrackId,
-                        isPlaying = isPlaying,
-                        onPlay = onPlayQueue,
-                        onAddToPlaylist = onAddTrackToPlaylist
-                    )
-                }
-            }
-
-            // Electronic & Synthwave
-            if (mood == "All" || mood == "Electronic") {
-                item(key = "shelf_electronic") {
-                    TrackCarouselShelf(
-                        title = "Electronic & Synthwave",
-                        subtitle = "Neon arpeggios, euphoric drops & spatial stereo",
-                        tracks = uiState.electronicSynth,
-                        activeTrackId = activeTrackId,
-                        isPlaying = isPlaying,
-                        onPlay = onPlayQueue,
-                        onAddToPlaylist = onAddTrackToPlaylist
-                    )
-                }
-            }
-
-            // Chill & Late Night
-            if (mood == "All" || mood == "Chill") {
-                item(key = "shelf_chill") {
-                    TrackCarouselShelf(
-                        title = "Chill & Late Night",
-                        subtitle = "Velvet lo-fi beats & nocturnal atmosphere",
-                        tracks = uiState.chillLateNight,
-                        activeTrackId = activeTrackId,
-                        isPlaying = isPlaying,
-                        onPlay = onPlayQueue,
-                        onAddToPlaylist = onAddTrackToPlaylist
-                    )
-                }
-            }
-
-            // On Your Device (Local MediaStore Files)
-            if (mood == "All" || mood == "Local Files") {
+            // On Your Device (Local MediaStore Audio)
+            if (selectedMood == "All" || selectedMood == "Local Files") {
                 item(key = "shelf_local") {
                     if (uiState.localTracks.isNotEmpty()) {
                         TrackCarouselShelf(
                             title = "On Your Device",
-                            subtitle = "${uiState.localTracks.size} local audio tracks ready to mix",
+                            subtitle = "${uiState.localTracks.size} local MP3/FLAC tracks ready offline",
                             tracks = uiState.localTracks.take(12),
                             activeTrackId = activeTrackId,
                             isPlaying = isPlaying,
                             onPlay = onPlayQueue,
+                            onStartRadio = onStartRadio,
                             onAddToPlaylist = onAddTrackToPlaylist
                         )
-                    } else if (mood == "Local Files") {
+                    } else if (selectedMood == "Local Files") {
                         LiquidGlassSurface(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 20.dp),
-                            cornerRadius = 22.dp
+                            cornerRadius = 22.dp,
+                            useRefractionShell = false
                         ) {
                             Row(
                                 modifier = Modifier.padding(18.dp),
@@ -351,13 +514,9 @@ fun HomeScreen(
                                     modifier = Modifier.size(28.dp)
                                 )
                                 Column {
+                                    Text("No local audio files found yet", style = MaterialTheme.typography.titleMedium, color = FrostWhite)
                                     Text(
-                                        text = "No local audio files found yet",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = FrostWhite
-                                    )
-                                    Text(
-                                        text = "Visit Library → Local Files to grant audio permission and scan MP3, FLAC & WAV files.",
+                                        text = "Open Library → Local Files to scan MP3, FLAC, WAV & M4A tracks on your device.",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MistSecondary
                                     )
@@ -367,6 +526,236 @@ fun HomeScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun EchoQuickPicksGridSection(
+    tracks: List<Track>,
+    activeTrackId: String?,
+    isPlaying: Boolean,
+    onPlayQueue: (List<Track>, Int) -> Unit,
+    onSurpriseMe: () -> Unit
+) {
+    val palette = LocalLiquidPalette.current
+    val columns = tracks.take(16).chunked(4)
+
+    Column(modifier = Modifier.padding(bottom = 24.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Quick Picks",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = FrostWhite
+                )
+                Text(
+                    text = "Live YouTube Music speed dial · Swipe horizontally",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MistSecondary
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(palette.primaryGlow.copy(alpha = 0.16f))
+                    .border(1.dp, palette.primaryGlow.copy(alpha = 0.45f), CircleShape)
+                    .clickable(onClick = onSurpriseMe)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = palette.primaryGlow, modifier = Modifier.size(15.dp))
+                Text("Radio Mix", style = MaterialTheme.typography.labelMedium, color = FrostWhite)
+            }
+        }
+
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            itemsIndexed(columns, key = { colIdx, _ -> "qp_col_$colIdx" }) { _, colTracks ->
+                Column(
+                    modifier = Modifier.width(278.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    colTracks.forEach { track ->
+                        val globalIdx = tracks.indexOf(track).coerceAtLeast(0)
+                        QuickPickTile(
+                            track = track,
+                            isActive = track.id == activeTrackId,
+                            isPlaying = isPlaying && track.id == activeTrackId,
+                            onClick = { onPlayQueue(tracks, globalIdx) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BrowseSectionRenderer(
+    section: BrowseSection,
+    activeTrackId: String?,
+    isPlaying: Boolean,
+    onPlayQueue: (List<Track>, Int) -> Unit,
+    onStartRadio: (Track) -> Unit,
+    onAddTrackToPlaylist: (Track) -> Unit,
+    onOpenAlbum: (String, MusicSource) -> Unit,
+    onOpenArtist: (String, MusicSource) -> Unit
+) {
+    when (section.layoutType) {
+        BrowseLayoutType.QUICK_PICKS_GRID -> {
+            if (section.tracks.isEmpty()) return
+            Column(modifier = Modifier.padding(bottom = 24.dp)) {
+                SectionHeader(
+                    title = section.title,
+                    subtitle = section.subtitle.ifBlank { "Tap to play · Radio button launches Endless Radio" }
+                )
+                val rows = section.tracks.take(8).chunked(2)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    rows.forEach { pair ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            pair.forEach { track ->
+                                val idx = section.tracks.indexOf(track)
+                                QuickPickTile(
+                                    track = track,
+                                    isActive = track.id == activeTrackId,
+                                    isPlaying = isPlaying && track.id == activeTrackId,
+                                    onClick = { onPlayQueue(section.tracks, idx) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            if (pair.size == 1) Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+        }
+
+        BrowseLayoutType.CHART_LIST -> {
+            if (section.tracks.isEmpty()) return
+            val palette = LocalLiquidPalette.current
+            Column(modifier = Modifier.padding(bottom = 24.dp)) {
+                SectionHeader(
+                    title = section.title,
+                    subtitle = section.subtitle.ifBlank { "Top live chart rankings" }
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    section.tracks.take(10).forEachIndexed { idx, track ->
+                        val isActive = track.id == activeTrackId
+                        EchoSurfaceCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("chart_track_${track.id}"),
+                            cornerRadius = 18.dp,
+                            elevated = isActive,
+                            accentBorder = if (isActive) palette.secondaryGlow.copy(alpha = 0.55f) else null,
+                            onClick = { onPlayQueue(section.tracks, idx) }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${idx + 1}",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = if (idx < 3) palette.primaryGlow else MistSecondary,
+                                    modifier = Modifier.width(26.dp)
+                                )
+                                TrackArtwork(
+                                    artworkUrl = track.artworkUrl,
+                                    contentDescription = track.title,
+                                    cornerRadius = 12.dp,
+                                    modifier = Modifier.size(48.dp)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = track.title,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = if (isActive) palette.primaryGlow else FrostWhite,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = track.artist,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MistSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                if (isActive) {
+                                    AnimatedWaveformBars(isPlaying = isPlaying, modifier = Modifier.padding(end = 4.dp))
+                                }
+                                IconButton(onClick = { onStartRadio(track) }, modifier = Modifier.size(38.dp)) {
+                                    Icon(Icons.Rounded.Radio, contentDescription = "Start radio", tint = palette.secondaryGlow, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        BrowseLayoutType.CAROUSEL_ALBUMS -> {
+            if (section.albums.isEmpty()) return
+            Box(modifier = Modifier.padding(bottom = 24.dp)) {
+                AlbumCarouselRow(
+                    title = section.title,
+                    albums = section.albums,
+                    onOpenAlbum = onOpenAlbum
+                )
+            }
+        }
+
+        BrowseLayoutType.CAROUSEL_ARTISTS -> {
+            if (section.artists.isEmpty()) return
+            Box(modifier = Modifier.padding(bottom = 24.dp)) {
+                ArtistCarouselRow(
+                    title = section.title,
+                    artists = section.artists,
+                    onOpenArtist = onOpenArtist
+                )
+            }
+        }
+
+        BrowseLayoutType.CAROUSEL_TRACKS -> {
+            TrackCarouselShelf(
+                title = section.title,
+                subtitle = section.subtitle.ifBlank { section.sourceProvider.displayName },
+                tracks = section.tracks,
+                activeTrackId = activeTrackId,
+                isPlaying = isPlaying,
+                onPlay = onPlayQueue,
+                onStartRadio = onStartRadio,
+                onAddToPlaylist = onAddTrackToPlaylist
+            )
         }
     }
 }
@@ -383,11 +772,13 @@ private fun SectionHeader(title: String, subtitle: String) {
             style = MaterialTheme.typography.headlineMedium,
             color = FrostWhite
         )
-        Text(
-            text = subtitle,
-            style = MaterialTheme.typography.bodySmall,
-            color = MistSecondary
-        )
+        if (subtitle.isNotBlank()) {
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MistSecondary
+            )
+        }
     }
 }
 
@@ -400,15 +791,14 @@ private fun QuickPickTile(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalLiquidPalette.current
-    LiquidGlassSurface(
+    EchoSurfaceCard(
         modifier = modifier
             .height(62.dp)
-            .clickable(onClick = onClick)
             .testTag("quick_pick_${track.id}"),
         cornerRadius = 16.dp,
-        surfaceAlpha = if (isActive) 0.72f else 0.52f,
-        highlightAccent = if (isActive) palette.secondaryGlow else null,
-        useRefractionShell = false
+        elevated = isActive,
+        accentBorder = if (isActive) palette.secondaryGlow.copy(alpha = 0.6f) else null,
+        onClick = onClick
     ) {
         Row(
             modifier = Modifier
@@ -454,6 +844,7 @@ private fun TrackCarouselShelf(
     activeTrackId: String?,
     isPlaying: Boolean,
     onPlay: (List<Track>, Int) -> Unit,
+    onStartRadio: (Track) -> Unit,
     onAddToPlaylist: (Track) -> Unit
 ) {
     if (tracks.isEmpty()) return
@@ -466,17 +857,16 @@ private fun TrackCarouselShelf(
             contentPadding = PaddingValues(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            itemsIndexed(tracks, key = { _, t -> "${title}_${t.id}" }) { index, track ->
+            itemsIndexed(tracks, key = { idx, t -> "${title}_${idx}_${t.id}" }) { index, track ->
                 val isActive = track.id == activeTrackId
-                LiquidGlassSurface(
+                EchoSurfaceCard(
                     modifier = Modifier
                         .width(158.dp)
-                        .clickable { onPlay(tracks, index) }
                         .testTag("carousel_track_${track.id}"),
                     cornerRadius = 20.dp,
-                    surfaceAlpha = if (isActive) 0.72f else 0.50f,
-                    highlightAccent = if (isActive) palette.secondaryGlow else null,
-                    useRefractionShell = false
+                    elevated = isActive,
+                    accentBorder = if (isActive) palette.secondaryGlow.copy(alpha = 0.6f) else null,
+                    onClick = { onPlay(tracks, index) }
                 ) {
                     Column(modifier = Modifier.padding(10.dp)) {
                         Box(modifier = Modifier.size(138.dp)) {
@@ -496,6 +886,24 @@ private fun TrackCarouselShelf(
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
                                     Text("LOCAL", style = MaterialTheme.typography.labelSmall, color = palette.secondaryGlow)
+                                }
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(6.dp)
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xB3070B18))
+                                        .clickable { onStartRadio(track) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Radio,
+                                        contentDescription = "Start radio",
+                                        tint = palette.secondaryGlow,
+                                        modifier = Modifier.size(15.dp)
+                                    )
                                 }
                             }
                             if (isActive) {

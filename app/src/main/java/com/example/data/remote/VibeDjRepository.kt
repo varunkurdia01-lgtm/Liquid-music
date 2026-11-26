@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
+import com.example.data.repository.UnifiedMusicRepository
 import com.example.domain.model.Track
 import com.example.domain.model.VibeDjResult
 import com.google.firebase.Firebase
@@ -28,9 +29,13 @@ data class VibePlan(
     val poweredByGemini: Boolean
 )
 
+/**
+ * Gemini AI Vibe DJ powered by Firebase AI Logic (`gemini-3.8-flash`), resolving curated picks
+ * through the unified Echo Music orchestrator (InnerTube primary -> JioSaavn fallback).
+ */
 class VibeDjRepository(
     private val context: Context,
-    private val saavnRepository: SaavnMusicRepository
+    private val musicRepository: UnifiedMusicRepository
 ) {
     private val vibeSchema = Schema.obj(
         properties = mapOf(
@@ -67,7 +72,6 @@ class VibeDjRepository(
             return Result.failure(IllegalArgumentException("Describe a mood or vibe to curate a playlist."))
         }
 
-        // If truly offline, run the built-in Offline Vibe Intent Engine immediately
         if (!isNetworkAvailable()) {
             val offlinePlan = buildOfflineVibePlan(cleanPrompt)
             val resolved = resolveTracksForPlan(offlinePlan, localTracks)
@@ -82,7 +86,6 @@ class VibeDjRepository(
             )
         }
 
-        // Online: call live Gemini (gemini-3.8-flash) via Firebase AI Logic with 60s timeout
         return try {
             val geminiPrompt = """
                 You are Liquid Music's AI Vibe DJ.
@@ -148,9 +151,6 @@ class VibeDjRepository(
         }
     }
 
-    /**
-     * Explicit offline intent engine so users can curate instant local/fallback mixes without network.
-     */
     suspend fun curateOfflineVibe(prompt: String, localTracks: List<Track>): VibeDjResult {
         val plan = buildOfflineVibePlan(prompt)
         val resolved = resolveTracksForPlan(plan, localTracks)
@@ -169,23 +169,27 @@ class VibeDjRepository(
     ): List<Track> = coroutineScope {
         val fetchedGroups = plan.searchQueries.map { query ->
             async {
-                runCatching { saavnRepository.searchSongs(query, limit = 3) }
+                runCatching { musicRepository.searchUnified(query, limit = 3).songs }
                     .getOrDefault(emptyList())
             }
         }.awaitAll()
 
         val combined = LinkedHashMap<String, Track>()
         fetchedGroups.flatten().forEach { track ->
-            if (combined.size < 12) combined[track.id] = track
+            if (combined.size < 14) combined[track.id] = track
         }
-        // Blend matching local tracks if space remains
         localTracks.take(4).forEach { local ->
-            if (combined.size < 12) combined.putIfAbsent(local.id, local)
+            if (combined.size < 14) combined.putIfAbsent(local.id, local)
         }
         if (combined.isEmpty()) {
-            FallbackMusicCatalog.seedTracks.forEach { combined[it.id] = it }
+            val fallbackSearch = runCatching {
+                musicRepository.searchUnified(plan.searchQueries.firstOrNull() ?: "top global hits", limit = 10).songs
+            }.getOrDefault(emptyList())
+            fallbackSearch.forEach { combined[it.id] = it }
         }
-        combined.values.toList().take(12)
+        val list = combined.values.toList().take(14)
+        musicRepository.registerTracks(list)
+        list
     }
 
     private fun buildOfflineVibePlan(prompt: String): VibePlan {

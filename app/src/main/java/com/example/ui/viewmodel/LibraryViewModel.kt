@@ -1,11 +1,14 @@
 package com.example.ui.viewmodel
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.LiquidAppContainer
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.PlaylistTrackCrossRef
+import com.example.data.local.SavedAlbumEntity
 import com.example.data.local.TrackEntity
+import com.example.domain.model.AlbumSummary
 import com.example.domain.model.Playlist
 import com.example.domain.model.Track
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,6 +16,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -62,11 +66,22 @@ class LibraryViewModel(
         tracks.map { it.toDomain(downloadMap[it.id]) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val savedAlbums: StateFlow<List<AlbumSummary>> = container.dao.observeSavedAlbums()
+        .map { list -> list.map { it.toDomain() } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val savedAlbumIds: StateFlow<Set<String>> = container.dao.observeSavedAlbumIds()
+        .map { it.toSet() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
     private val _localTracks = MutableStateFlow<List<Track>>(emptyList())
     val localTracks: StateFlow<List<Track>> = _localTracks.asStateFlow()
 
     private val _hasAudioPermission = MutableStateFlow(container.localAudioRepository.hasAudioPermission())
     val hasAudioPermission: StateFlow<Boolean> = _hasAudioPermission.asStateFlow()
+
+    private val _transferStatus = MutableStateFlow<String?>(null)
+    val transferStatus: StateFlow<String?> = _transferStatus.asStateFlow()
 
     val requiredAudioPermission: String
         get() = container.localAudioRepository.requiredAudioPermission()
@@ -80,7 +95,21 @@ class LibraryViewModel(
         _hasAudioPermission.value = granted
         if (granted) {
             viewModelScope.launch {
-                _localTracks.value = container.localAudioRepository.scanDeviceAudio()
+                val scanned = container.localAudioRepository.scanDeviceAudio()
+                container.musicRepository.registerTracks(scanned)
+                _localTracks.value = scanned
+            }
+        }
+    }
+
+    fun toggleSaveAlbum(album: AlbumSummary) {
+        viewModelScope.launch {
+            if (savedAlbumIds.value.contains(album.id)) {
+                container.dao.deleteSavedAlbum(album.id)
+                _transferStatus.value = "Removed \"${album.title}\" from Saved Albums"
+            } else {
+                container.dao.upsertSavedAlbum(SavedAlbumEntity.fromDomain(album))
+                _transferStatus.value = "Saved \"${album.title}\" to Library"
             }
         }
     }
@@ -152,6 +181,32 @@ class LibraryViewModel(
         viewModelScope.launch {
             container.dao.removeTrackFromPlaylist(playlistId, trackId)
         }
+    }
+
+    fun exportPlaylistAsM3u8(playlist: Playlist, targetUri: Uri) {
+        viewModelScope.launch {
+            _transferStatus.value = "Exporting \"${playlist.name}\"…"
+            val res = container.backupRestoreManager.exportPlaylistAsM3u8(playlist, targetUri)
+            _transferStatus.value = res.fold(
+                onSuccess = { count -> "Exported \"${playlist.name}\" ($count tracks) as M3U8" },
+                onFailure = { err -> "Export failed: ${err.localizedMessage ?: "Error"}" }
+            )
+        }
+    }
+
+    fun importPlaylistFromUri(sourceUri: Uri) {
+        viewModelScope.launch {
+            _transferStatus.value = "Importing playlist…"
+            val res = container.backupRestoreManager.importPlaylistFromUri(sourceUri)
+            _transferStatus.value = res.fold(
+                onSuccess = { (name, count) -> "Imported \"$name\" ($count tracks)" },
+                onFailure = { err -> "Import failed: ${err.localizedMessage ?: "Unsupported file"}" }
+            )
+        }
+    }
+
+    fun clearTransferStatus() {
+        _transferStatus.value = null
     }
 
     fun deleteOfflineDownload(trackId: String) {

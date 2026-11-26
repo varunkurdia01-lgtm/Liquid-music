@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.HighQuality
+import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.SurroundSound
 import androidx.compose.material3.Icon
@@ -75,6 +76,10 @@ fun SoundLabScreen(
     sleepTimerOption: SleepTimerOption,
     sleepTimerRemainingSec: Int,
     bottomPadding: Dp,
+    onToggleSkipSilence: (Boolean) -> Unit,
+    onToggleVolumeNormalization: (Boolean) -> Unit,
+    onToggleGaplessPlayback: (Boolean) -> Unit,
+    onToggleAutoPlayRadio: (Boolean) -> Unit,
     onApplyMagicPreset: (MagicSoundPreset) -> Unit,
     onToggleEightD: (Boolean) -> Unit,
     onSelectEqPreset: (EqPreset) -> Unit,
@@ -106,7 +111,7 @@ fun SoundLabScreen(
             ) {
                 Column {
                     Text("Sound Lab", style = MaterialTheme.typography.headlineLarge, color = FrostWhite)
-                    Text("Real-time hardware DSP & Liquid Glass controls", style = MaterialTheme.typography.bodySmall, color = MistSecondary)
+                    Text("Pro Echo Audio Engine & Hardware DSP", style = MaterialTheme.typography.bodySmall, color = MistSecondary)
                 }
                 Box(
                     modifier = Modifier
@@ -119,6 +124,50 @@ fun SoundLabScreen(
                         text = if (hardwareAttached) "DSP ACTIVE" else "DSP READY",
                         style = MaterialTheme.typography.labelSmall,
                         color = if (hardwareAttached) EmeraldPulse else palette.secondaryGlow
+                    )
+                }
+            }
+        }
+
+        // Pro Audio Engine Card: Skip Silence, Volume Normalization, Gapless, Auto-Play Radio
+        item(key = "pro_audio_engine") {
+            LiquidGlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 26.dp, useRefractionShell = false) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    LabSectionTitle(icon = Icons.Rounded.Memory, title = "Pro Audio Engine")
+
+                    EngineToggleRow(
+                        title = "Skip Silence",
+                        subtitle = "Automatically trim quiet pauses during tracks",
+                        checked = settings.skipSilenceEnabled,
+                        tag = "toggle_skip_silence",
+                        onCheckedChange = onToggleSkipSilence
+                    )
+
+                    EngineToggleRow(
+                        title = "Audio Volume Normalization",
+                        subtitle = "Consistent target loudness via hardware LoudnessEnhancer",
+                        checked = settings.volumeNormalizationEnabled,
+                        tag = "toggle_volume_normalization",
+                        onCheckedChange = onToggleVolumeNormalization
+                    )
+
+                    EngineToggleRow(
+                        title = "Gapless Playback",
+                        subtitle = "Seamless zero-gap transitions between album tracks",
+                        checked = settings.gaplessPlaybackEnabled,
+                        tag = "toggle_gapless_playback",
+                        onCheckedChange = onToggleGaplessPlayback
+                    )
+
+                    EngineToggleRow(
+                        title = "Auto-Play Endless Radio",
+                        subtitle = "Queue related songs automatically before playback stops",
+                        checked = settings.autoPlayRadioEnabled,
+                        tag = "toggle_autoplay_radio",
+                        onCheckedChange = onToggleAutoPlayRadio
                     )
                 }
             }
@@ -357,7 +406,7 @@ fun SoundLabScreen(
                 ) {
                     LabSectionTitle(icon = Icons.Rounded.GraphicEq, title = "Crossfade Transitions")
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Gapless Fade Duration", style = MaterialTheme.typography.bodyMedium, color = MistSecondary)
+                        Text("Crossfade Duration", style = MaterialTheme.typography.bodyMedium, color = MistSecondary)
                         Text(
                             text = if (settings.crossfadeSeconds == 0) "Off" else "${settings.crossfadeSeconds}s",
                             style = MaterialTheme.typography.labelMedium,
@@ -406,6 +455,31 @@ fun SoundLabScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun EngineToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    tag: String,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, color = FrostWhite)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MistSecondary)
+        }
+        LiquidGlassToggle(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            modifier = Modifier.testTag(tag)
+        )
     }
 }
 

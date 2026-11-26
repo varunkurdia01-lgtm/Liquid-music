@@ -1,34 +1,56 @@
 package com.example.data.remote
 
 import android.text.Html
+import android.util.Base64
 import android.util.Log
+import com.example.domain.model.MusicSource
 import com.example.domain.model.SourceType
 import com.example.domain.model.Track
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import javax.crypto.Cipher
+import javax.crypto.spec.SecretKeySpec
 
 private const val TAG = "SaavnMusicRepo"
 
+/**
+ * High-bitrate 320kbps audio extension & JioSaavn fallback repository.
+ * Supports:
+ * 1. Custom user-configured 320kbps / lossless extension server URL (from Echo Music Extension Settings)
+ * 2. saavn.sumit.co API
+ * 3. Direct official www.jiosaavn.com API with native DES-ECB encrypted_media_url decryption (320kbps AAC/M4A)
+ * Zero hardcoded dummy tracks.
+ */
 class SaavnMusicRepository(
     private val okHttpClient: OkHttpClient
 ) {
-    private val endpoints = listOf(
+    @Volatile
+    var customBaseUrl: String = "https://saavn.sumit.co/api"
+
+    private val defaultEndpoints = listOf(
         "https://saavn.sumit.co/api/search/songs",
-        "https://saavn.dev/api/search/songs"
+        "https://jiosaavn-api-privatecvc2.vercel.app/search/songs"
     )
 
     suspend fun searchSongs(query: String, limit: Int = 20): List<Track> = withContext(Dispatchers.IO) {
         val trimmed = query.trim()
         if (trimmed.isBlank()) return@withContext emptyList()
 
-        for (endpoint in endpoints) {
+        val customSearchEndpoint = customBaseUrl.trim().trimEnd('/').takeIf { it.startsWith("http") }?.let {
+            if (it.endsWith("/search/songs")) it else "$it/search/songs"
+        }
+        val endpointsToTry = (listOfNotNull(customSearchEndpoint) + defaultEndpoints).distinct()
+
+        for (endpoint in endpointsToTry) {
             try {
-                val url = endpoint.toHttpUrl().newBuilder()
+                val httpUrl = endpoint.toHttpUrlOrNull() ?: continue
+                val url = httpUrl.newBuilder()
                     .addQueryParameter("query", trimmed)
                     .addQueryParameter("limit", limit.toString())
                     .build()
@@ -36,7 +58,7 @@ class SaavnMusicRepository(
                 val request = Request.Builder()
                     .url(url)
                     .header("Accept", "application/json")
-                    .header("User-Agent", "LiquidMusicAndroid/1.0")
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) EchoLiquidMusic/2.0")
                     .build()
 
                 okHttpClient.newCall(request).execute().use { response ->
@@ -47,7 +69,7 @@ class SaavnMusicRepository(
                     val raw = response.body?.string().orEmpty()
                     val parsed = parseSaavnResponse(raw)
                     if (parsed.isNotEmpty()) {
-                        return@withContext parsed
+                        return@withContext parsed.take(limit)
                     }
                 }
             } catch (e: Exception) {
@@ -55,8 +77,110 @@ class SaavnMusicRepository(
             }
         }
 
-        // Resilient offline/rate-limit fallback using playable royalty-free streams
-        FallbackMusicCatalog.filterByQuery(trimmed).take(limit)
+        // Direct official JioSaavn v4 API fallback with native DES decryption
+        searchOfficialJioSaavn(trimmed, limit)
+    }
+
+    private fun searchOfficialJioSaavn(query: String, limit: Int): List<Track> {
+        return try {
+            val url = "https://www.jiosaavn.com/api.php".toHttpUrl().newBuilder()
+                .addQueryParameter("__call", "search.getResults")
+                .addQueryParameter("_format", "json")
+                .addQueryParameter("_marker", "0")
+                .addQueryParameter("api_version", "4")
+                .addQueryParameter("ctx", "web6dot0")
+                .addQueryParameter("cc", "in")
+                .addQueryParameter("includeMetaTags", "1")
+                .addQueryParameter("n", limit.toString())
+                .addQueryParameter("p", "1")
+                .addQueryParameter("q", query)
+                .build()
+
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
+                .header("Accept", "application/json, text/plain, */*")
+                .header("Referer", "https://www.jiosaavn.com/")
+                .build()
+
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return emptyList()
+                val raw = response.body?.string().orEmpty()
+                if (raw.isBlank()) return emptyList()
+                val root = JSONObject(raw)
+                val results = root.optJSONArray("results") ?: return emptyList()
+                val tracks = mutableListOf<Track>()
+                for (i in 0 until results.length()) {
+                    val item = results.optJSONObject(i) ?: continue
+                    val id = item.optString("id").ifBlank { continue }
+                    val title = decodeHtml(item.optString("title").ifBlank { item.optString("song") })
+                    if (title.isBlank()) continue
+                    val moreInfo = item.optJSONObject("more_info")
+                    val encryptedUrl = moreInfo?.optString("encrypted_media_url")
+                        ?.ifBlank { item.optString("encrypted_media_url") }
+                        .orEmpty()
+                    val baseDecrypted = decryptSaavnMediaUrl(encryptedUrl)
+                    if (baseDecrypted.isBlank()) continue
+                    val has320 = moreInfo?.optString("320kbps").equals("true", ignoreCase = true) ||
+                        item.optString("320kbps").equals("true", ignoreCase = true)
+                    val suffixRegex = Regex("""_\d+(_p)?\.mp4$""")
+                    val decrypted96 = suffixRegex.replace(baseDecrypted, "_96.mp4")
+                    val decrypted160 = suffixRegex.replace(baseDecrypted, "_160.mp4")
+                    val decrypted320 = if (has320) suffixRegex.replace(baseDecrypted, "_320.mp4") else decrypted160
+
+                    val artist = decodeHtml(
+                        moreInfo?.optJSONObject("artistMap")
+                            ?.optJSONArray("primary_artists")
+                            ?.let { arr ->
+                                (0 until arr.length()).mapNotNull { idx ->
+                                    arr.optJSONObject(idx)?.optString("name")?.takeIf { it.isNotBlank() }
+                                }.joinToString(", ")
+                            }
+                            .orEmpty()
+                            .ifBlank { item.optString("subtitle") }
+                    ).ifBlank { "Unknown Artist" }
+
+                    val album = decodeHtml(moreInfo?.optString("album").orEmpty())
+                    val durationSec = moreInfo?.optLong("duration", 0L) ?: 0L
+                    val artwork = item.optString("image").replace("150x150", "500x500")
+
+                    tracks.add(
+                        Track(
+                            id = "saavn_$id",
+                            title = title,
+                            artist = artist,
+                            album = album,
+                            durationMs = durationSec * 1000L,
+                            artworkUrl = artwork,
+                            streamUrl96 = decrypted96,
+                            streamUrl160 = decrypted160,
+                            streamUrl320 = decrypted320,
+                            sourceType = SourceType.ONLINE,
+                            sourceProvider = MusicSource.JIOSAAVN,
+                            providerTrackId = id
+                        )
+                    )
+                }
+                tracks
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Official JioSaavn fallback failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    private fun decryptSaavnMediaUrl(encryptedBase64: String): String {
+        if (encryptedBase64.isBlank()) return ""
+        return try {
+            val keySpec = SecretKeySpec("38346591".toByteArray(Charsets.UTF_8), "DES")
+            val cipher = Cipher.getInstance("DES/ECB/PKCS5Padding")
+            cipher.init(Cipher.DECRYPT_MODE, keySpec)
+            val decoded = Base64.decode(encryptedBase64.trim(), Base64.DEFAULT)
+            val decrypted = String(cipher.doFinal(decoded), Charsets.UTF_8).trim()
+            decrypted.replace("http://", "https://")
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     private fun parseSaavnResponse(rawJson: String): List<Track> {
@@ -96,7 +220,9 @@ class SaavnMusicRepository(
                     streamUrl96 = url96,
                     streamUrl160 = url160,
                     streamUrl320 = url320,
-                    sourceType = SourceType.ONLINE
+                    sourceType = SourceType.ONLINE,
+                    sourceProvider = MusicSource.JIOSAAVN,
+                    providerTrackId = id
                 )
             )
         }
@@ -149,113 +275,10 @@ class SaavnMusicRepository(
     }
 }
 
+/**
+ * Legacy reference stub — contains ZERO hardcoded or dummy songs so fake tracks never appear in UI.
+ */
 object FallbackMusicCatalog {
-    val seedTracks: List<Track> = listOf(
-        Track(
-            id = "seed_midnight_crystal",
-            title = "Midnight Crystal",
-            artist = "Aether Pulse",
-            album = "Aurora Drift",
-            durationMs = 372_000L,
-            artworkUrl = "https://images.unsplash.com/photo-1614149162883-504ce4d13909?w=600&q=80",
-            streamUrl96 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-            streamUrl160 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-            streamUrl320 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-            sourceType = SourceType.ONLINE
-        ),
-        Track(
-            id = "seed_neon_horizon",
-            title = "Neon Horizon",
-            artist = "Kairo Vance",
-            album = "Electric Glass",
-            durationMs = 425_000L,
-            artworkUrl = "https://images.unsplash.com/photo-1557672172-298e090bd0f1?w=600&q=80",
-            streamUrl96 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
-            streamUrl160 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
-            streamUrl320 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
-            sourceType = SourceType.ONLINE
-        ),
-        Track(
-            id = "seed_velvet_bassline",
-            title = "Velvet Bassline",
-            artist = "Nova & The Waves",
-            album = "City Lights Pop",
-            durationMs = 344_000L,
-            artworkUrl = "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&q=80",
-            streamUrl96 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
-            streamUrl160 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
-            streamUrl320 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
-            sourceType = SourceType.ONLINE
-        ),
-        Track(
-            id = "seed_chrome_velocity",
-            title = "Chrome Velocity",
-            artist = "Riku Beats",
-            album = "Subzero Trap",
-            durationMs = 302_000L,
-            artworkUrl = "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&q=80",
-            streamUrl96 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
-            streamUrl160 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
-            streamUrl320 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
-            sourceType = SourceType.ONLINE
-        ),
-        Track(
-            id = "seed_cobalt_rain",
-            title = "Cobalt Rain",
-            artist = "Sora Lo-Fi",
-            album = "After Hours Chill",
-            durationMs = 353_000L,
-            artworkUrl = "https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=600&q=80",
-            streamUrl96 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3",
-            streamUrl160 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3",
-            streamUrl320 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3",
-            sourceType = SourceType.ONLINE
-        ),
-        Track(
-            id = "seed_starlight_synth",
-            title = "Starlight Synth",
-            artist = "Vex & Lumina",
-            album = "Synthwave Odyssey",
-            durationMs = 280_000L,
-            artworkUrl = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&q=80",
-            streamUrl96 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3",
-            streamUrl160 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3",
-            streamUrl320 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3",
-            sourceType = SourceType.ONLINE
-        ),
-        Track(
-            id = "seed_glacial_echoes",
-            title = "Glacial Echoes",
-            artist = "Mirei",
-            album = "Deep Space Ambient",
-            durationMs = 420_000L,
-            artworkUrl = "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=600&q=80",
-            streamUrl96 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3",
-            streamUrl160 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3",
-            streamUrl320 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3",
-            sourceType = SourceType.ONLINE
-        ),
-        Track(
-            id = "seed_hyperdrive_anthem",
-            title = "Hyperdrive Anthem",
-            artist = "DJ Solis",
-            album = "Club Pulse 2026",
-            durationMs = 325_000L,
-            artworkUrl = "https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=600&q=80",
-            streamUrl96 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3",
-            streamUrl160 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3",
-            streamUrl320 = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3",
-            sourceType = SourceType.ONLINE
-        )
-    )
-
-    fun filterByQuery(query: String): List<Track> {
-        val tokens = query.lowercase().split(" ").filter { it.length >= 2 }
-        if (tokens.isEmpty()) return seedTracks
-        val matched = seedTracks.filter { track ->
-            val haystack = "${track.title} ${track.artist} ${track.album}".lowercase()
-            tokens.any { haystack.contains(it) }
-        }
-        return matched.ifEmpty { seedTracks }
-    }
+    val seedTracks: List<Track> = emptyList()
+    fun filterByQuery(query: String): List<Track> = emptyList()
 }

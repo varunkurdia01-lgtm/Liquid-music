@@ -3,17 +3,27 @@ package com.example.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.LiquidAppContainer
+import com.example.data.remote.EchoExtensionManager
 import com.example.domain.model.AudioQuality
+import com.example.domain.model.EchoAddonConfig
 import com.example.domain.model.EqPreset
+import com.example.domain.model.GlassOpticalPreset
 import com.example.domain.model.GlassQualityTier
+import com.example.domain.model.LiquidGlassConfig
 import com.example.domain.model.MagicSoundPreset
 import com.example.domain.model.ReverbPreset
 import com.example.domain.model.SoundLabSettings
+import com.example.player.LiquidAudioCache
 import com.example.player.PlaybackDspBridge
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 
 class SoundLabViewModel(
     private val container: LiquidAppContainer
@@ -24,6 +34,280 @@ class SoundLabViewModel(
 
     val bandLabels: StateFlow<List<String>> = PlaybackDspBridge.soundLabController.bandLabels
     val hardwareAttached: StateFlow<Boolean> = PlaybackDspBridge.soundLabController.hardwareAttached
+    val cacheSizeBytes: StateFlow<Long> = LiquidAudioCache.cacheSizeBytes
+
+    private val _activeVisitorData = MutableStateFlow("")
+    val activeVisitorData: StateFlow<String> = _activeVisitorData.asStateFlow()
+
+    private val _settingsActionNotice = MutableStateFlow<String?>(null)
+    val settingsActionNotice: StateFlow<String?> = _settingsActionNotice.asStateFlow()
+
+    private val _ytmSyncInProgress = MutableStateFlow(false)
+    val ytmSyncInProgress: StateFlow<Boolean> = _ytmSyncInProgress.asStateFlow()
+
+    val configuredAddons: StateFlow<List<EchoAddonConfig>> = container.preferencesRepository.soundLabSettings
+        .map { s ->
+            val parsed = EchoExtensionManager.parseAddonsJson(s.addonsJson).toMutableList()
+            listOf(s.losslessExtensionUrl, s.customExtensionUrl)
+                .map { container.extensionManager.sanitizeUrl(it) }
+                .filter { url ->
+                    url.isNotBlank() &&
+                        !url.contains("saavn.sumit.co", ignoreCase = true) &&
+                        !url.contains("saavn.dev", ignoreCase = true) &&
+                        !url.contains("jiosaavn.com", ignoreCase = true)
+                }
+                .forEach { legacy ->
+                    if (parsed.none { it.baseUrl.equals(legacy, ignoreCase = true) }) {
+                        parsed.add(
+                            EchoAddonConfig(
+                                id = "addon_${legacy.hashCode()}",
+                                baseUrl = legacy,
+                                name = legacy.substringAfter("://").substringBefore("/"),
+                                supportsLossless = legacy == container.extensionManager.sanitizeUrl(s.losslessExtensionUrl),
+                                enabled = true,
+                                priority = parsed.size
+                            )
+                        )
+                    }
+                }
+            parsed.sortedBy { it.priority }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    init {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            LiquidAudioCache.refreshCacheSize()
+            container.preferencesRepository.soundLabSettings.collect { s ->
+                container.musicRepository.applyEchoProviderSettings(s)
+                _activeVisitorData.value = container.musicRepository.getActiveVisitorData()
+            }
+        }
+    }
+
+    fun clearActionNotice() {
+        _settingsActionNotice.value = null
+    }
+
+    fun updateEchoSettings(
+        notice: String? = null,
+        transform: (SoundLabSettings) -> SoundLabSettings
+    ) {
+        updateSettings(transform)
+        if (!notice.isNullOrBlank()) {
+            _settingsActionNotice.value = notice
+        }
+    }
+
+    fun refreshInnerTubeVisitorData(onCompleted: () -> Unit = {}) {
+        viewModelScope.launch {
+            val newVd = container.musicRepository.refreshVisitorData()
+            _activeVisitorData.value = newVd
+            if (newVd.isNotBlank()) {
+                updateSettings { it.copy(visitorData = newVd) }
+                _settingsActionNotice.value = "Refreshed YouTube Music VisitorData token"
+            } else {
+                _settingsActionNotice.value = "Could not fetch fresh VisitorData — check connection"
+            }
+            onCompleted()
+        }
+    }
+
+    fun clearListenHistory() {
+        viewModelScope.launch {
+            container.dao.clearListeningHistory()
+            _settingsActionNotice.value = "Listening history cleared"
+        }
+    }
+
+    fun clearSearchHistory() {
+        viewModelScope.launch {
+            container.dao.clearSearchHistory()
+            _settingsActionNotice.value = "Search history cleared"
+        }
+    }
+
+    fun clearAllDownloads() {
+        viewModelScope.launch {
+            container.downloadManager.clearAllDownloads()
+            _settingsActionNotice.value = "All offline downloaded songs removed"
+        }
+    }
+
+    fun adjustLyricsOffset(deltaMs: Long) {
+        updateSettings { it.copy(lyricsOffsetMs = (it.lyricsOffsetMs + deltaMs).coerceIn(-10_000L, 10_000L)) }
+    }
+
+    fun resetLyricsOffset() {
+        updateSettings { it.copy(lyricsOffsetMs = 0L) }
+        _settingsActionNotice.value = "Lyrics timing offset reset to 0.0s"
+    }
+
+    fun addAndTestAddon(rawUrl: String, onResult: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            val result = container.extensionManager.inspectAddon(rawUrl)
+            result.fold(
+                onSuccess = { verified ->
+                    val current = configuredAddons.value.toMutableList()
+                    val existingIdx = current.indexOfFirst { it.baseUrl.equals(verified.baseUrl, ignoreCase = true) }
+                    if (existingIdx >= 0) {
+                        current[existingIdx] = verified.copy(priority = existingIdx)
+                    } else {
+                        current.add(verified.copy(priority = current.size))
+                    }
+                    val json = EchoExtensionManager.serializeAddonsJson(current)
+                    updateSettings { it.copy(addonsJson = json) }
+                    val msg = "Verified ${verified.name} (${verified.latencyMs ?: 0}ms)"
+                    _settingsActionNotice.value = msg
+                    onResult(msg)
+                },
+                onFailure = { err ->
+                    val msg = "Addon check failed: ${err.message ?: "Unreachable"}"
+                    _settingsActionNotice.value = msg
+                    onResult(msg)
+                }
+            )
+        }
+    }
+
+    fun toggleAddonEnabled(addonId: String) {
+        val updated = configuredAddons.value.map {
+            if (it.id == addonId) it.copy(enabled = !it.enabled) else it
+        }
+        updateSettings { it.copy(addonsJson = EchoExtensionManager.serializeAddonsJson(updated)) }
+    }
+
+    fun moveAddonPriority(addonId: String, moveUp: Boolean) {
+        val list = configuredAddons.value.toMutableList()
+        val idx = list.indexOfFirst { it.id == addonId }
+        if (idx < 0) return
+        val target = if (moveUp) idx - 1 else idx + 1
+        if (target !in list.indices) return
+        val item = list.removeAt(idx)
+        list.add(target, item)
+        val reindexed = list.mapIndexed { i, a -> a.copy(priority = i) }
+        updateSettings { it.copy(addonsJson = EchoExtensionManager.serializeAddonsJson(reindexed)) }
+    }
+
+    fun removeAddon(addonId: String) {
+        val remaining = configuredAddons.value.filterNot { it.id == addonId }
+            .mapIndexed { i, a -> a.copy(priority = i) }
+        updateSettings {
+            it.copy(
+                addonsJson = EchoExtensionManager.serializeAddonsJson(remaining),
+                losslessExtensionUrl = if (remaining.none { a -> a.baseUrl == container.extensionManager.sanitizeUrl(it.losslessExtensionUrl) }) "" else it.losslessExtensionUrl
+            )
+        }
+        _settingsActionNotice.value = "Extension removed"
+    }
+
+    fun completeYouTubeWebViewLogin(
+        cookie: String,
+        visitorData: String,
+        dataSyncId: String,
+        onFinished: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _ytmSyncInProgress.value = true
+            val info = runCatching {
+                container.musicRepository.fetchYouTubeAccountInfo(cookie, visitorData, dataSyncId)
+            }.getOrNull()
+
+            updateSettings { current ->
+                current.copy(
+                    innerTubeCookie = cookie,
+                    visitorData = visitorData.ifBlank { current.visitorData },
+                    dataSyncId = dataSyncId.ifBlank { current.dataSyncId },
+                    ytmAccountName = info?.name?.ifBlank { "YouTube Music Account" } ?: "YouTube Music Account",
+                    ytmAccountHandle = info?.handle.orEmpty(),
+                    ytmAccountAvatarUrl = info?.avatarUrl.orEmpty()
+                )
+            }
+
+            // Immediately sync Liked Songs, Playlists & Saved Albums into Room if sync is enabled
+            val shouldSync = container.preferencesRepository.soundLabSettings.first().ytmSyncEnabled
+            if (shouldSync) {
+                val summary = container.musicRepository.syncYouTubeLibrary()
+                if (summary.errorMessage == null) {
+                    updateSettings { it.copy(ytmLastSyncedAt = System.currentTimeMillis()) }
+                    _settingsActionNotice.value =
+                        "Connected ${info?.name.orEmpty().ifBlank { "YouTube Music" }} · Synced ${summary.likedSongsSynced} likes, ${summary.playlistsSynced} playlists"
+                } else {
+                    _settingsActionNotice.value = "Connected YouTube Music account"
+                }
+            } else {
+                _settingsActionNotice.value = "Connected YouTube Music account"
+            }
+            _ytmSyncInProgress.value = false
+            onFinished()
+        }
+    }
+
+    fun syncYouTubeLibraryNow(onFinished: () -> Unit = {}) {
+        viewModelScope.launch {
+            _ytmSyncInProgress.value = true
+            val summary = container.musicRepository.syncYouTubeLibrary()
+            if (summary.errorMessage != null) {
+                _settingsActionNotice.value = summary.errorMessage
+            } else {
+                updateSettings { it.copy(ytmLastSyncedAt = System.currentTimeMillis()) }
+                _settingsActionNotice.value =
+                    "Synced ${summary.likedSongsSynced} likes, ${summary.playlistsSynced} playlists, ${summary.albumsSynced} albums"
+            }
+            _ytmSyncInProgress.value = false
+            onFinished()
+        }
+    }
+
+    fun disconnectYouTubeAccount() {
+        updateSettings {
+            it.copy(
+                innerTubeCookie = "",
+                dataSyncId = "",
+                ytmAccountName = "",
+                ytmAccountHandle = "",
+                ytmAccountAvatarUrl = "",
+                ytmLastSyncedAt = 0L
+            )
+        }
+        _settingsActionNotice.value = "Disconnected YouTube Music account"
+    }
+
+    fun clearImageCache() {
+        viewModelScope.launch {
+            val imageCacheDir = File(container.appContext.cacheDir, "image_cache")
+            if (imageCacheDir.exists()) {
+                imageCacheDir.deleteRecursively()
+            }
+            _settingsActionNotice.value = "Image artwork cache cleared"
+        }
+    }
+
+    fun toggleSkipSilence(enabled: Boolean) {
+        updateSettings { it.copy(skipSilenceEnabled = enabled) }
+    }
+
+    fun toggleVolumeNormalization(enabled: Boolean) {
+        updateSettings { it.copy(volumeNormalizationEnabled = enabled) }
+    }
+
+    fun toggleGaplessPlayback(enabled: Boolean) {
+        updateSettings { it.copy(gaplessPlaybackEnabled = enabled) }
+    }
+
+    fun toggleAutoPlayRadio(enabled: Boolean) {
+        updateSettings { it.copy(autoPlayRadioEnabled = enabled) }
+    }
+
+    fun updateMaxCacheSizeMb(sizeMb: Int) {
+        updateSettings { it.copy(maxCacheSizeMb = sizeMb.coerceIn(128, 4096)) }
+    }
+
+    fun clearAudioCache() {
+        viewModelScope.launch {
+            LiquidAudioCache.clearCache(container.appContext)
+            _settingsActionNotice.value = "Audio stream cache cleared"
+        }
+    }
 
     fun selectEqPreset(preset: EqPreset) {
         updateSettings { current ->
@@ -132,10 +416,10 @@ class SoundLabViewModel(
         }
     }
 
-    fun applyGlassOpticalPreset(preset: com.example.domain.model.GlassOpticalPreset) {
+    fun applyGlassOpticalPreset(preset: GlassOpticalPreset) {
         updateSettings { current ->
             current.copy(
-                glassConfig = com.example.domain.model.LiquidGlassConfig(
+                glassConfig = LiquidGlassConfig(
                     opticalPreset = preset,
                     pillScale = preset.pillScale,
                     springStiffness = preset.springStiffness,
@@ -149,10 +433,10 @@ class SoundLabViewModel(
         }
     }
 
-    fun updateGlassConfig(transform: (com.example.domain.model.LiquidGlassConfig) -> com.example.domain.model.LiquidGlassConfig) {
+    fun updateGlassConfig(transform: (LiquidGlassConfig) -> LiquidGlassConfig) {
         updateSettings { current ->
             val updated = transform(current.glassConfig).copy(
-                opticalPreset = com.example.domain.model.GlassOpticalPreset.CUSTOM
+                opticalPreset = GlassOpticalPreset.CUSTOM
             )
             current.copy(glassConfig = updated)
         }
@@ -162,6 +446,7 @@ class SoundLabViewModel(
         viewModelScope.launch {
             container.preferencesRepository.updateSoundLabSettings { current ->
                 val next = transform(current)
+                container.musicRepository.applyEchoProviderSettings(next)
                 PlaybackDspBridge.applySoundLab(next)
                 next
             }

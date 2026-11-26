@@ -64,7 +64,8 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 fun OnboardingScreen(
     onSignInWithEmail: (displayName: String, email: String) -> Unit,
     onContinueWithGoogleDemo: () -> Unit,
-    onSkipAsGuest: () -> Unit
+    onSkipAsGuest: () -> Unit,
+    isBackdropReady: Boolean = true
 ) {
     val palette = LocalLiquidPalette.current
     val onboardingBackdrop = rememberLayerBackdrop()
@@ -74,11 +75,13 @@ fun OnboardingScreen(
 
     Box(modifier = Modifier.fillMaxSize()) {
         LiquidAuroraCanvas(
-            modifier = Modifier.layerBackdrop(onboardingBackdrop),
+            modifier = if (isBackdropReady) Modifier.layerBackdrop(onboardingBackdrop) else Modifier,
             intensity = 1.2f
         )
 
-        CompositionLocalProvider(LocalLiquidBackdrop provides onboardingBackdrop) {
+        CompositionLocalProvider(
+            LocalLiquidBackdrop provides if (isBackdropReady) onboardingBackdrop else null
+        ) {
             Column(
             modifier = Modifier
                 .fillMaxSize()

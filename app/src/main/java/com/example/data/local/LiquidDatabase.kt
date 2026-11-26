@@ -12,9 +12,13 @@ import androidx.room.RoomDatabase
         PlaylistTrackCrossRef::class,
         LikedTrackEntity::class,
         DownloadedTrackEntity::class,
-        ListeningEventEntity::class
+        ListeningEventEntity::class,
+        SavedAlbumEntity::class,
+        CachedLyricsEntity::class,
+        SearchHistoryEntity::class,
+        PlaybackQueueEntity::class
     ],
-    version = 1,
+    version = 3,
     exportSchema = false
 )
 abstract class LiquidDatabase : RoomDatabase() {

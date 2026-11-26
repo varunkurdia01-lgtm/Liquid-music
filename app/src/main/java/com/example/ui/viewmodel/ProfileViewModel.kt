@@ -1,13 +1,16 @@
 package com.example.ui.viewmodel
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.LiquidAppContainer
 import com.example.domain.model.TopStatItem
 import com.example.domain.model.UserProfile
 import com.example.domain.model.WrappedStats
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -15,12 +18,20 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 
+data class BackupUiState(
+    val isBusy: Boolean = false,
+    val statusMessage: String? = null
+)
+
 class ProfileViewModel(
     private val container: LiquidAppContainer
 ) : ViewModel() {
 
     val userProfile: StateFlow<UserProfile> = container.authRepository.userProfile
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UserProfile())
+
+    private val _backupState = MutableStateFlow(BackupUiState())
+    val backupState: StateFlow<BackupUiState> = _backupState.asStateFlow()
 
     val wrappedStats: StateFlow<WrappedStats> = combine(
         container.dao.observeListeningEvents(),
@@ -67,6 +78,52 @@ class ProfileViewModel(
             personalityDescription = personalityDesc
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), WrappedStats())
+
+    fun exportFullBackup(uri: Uri) {
+        viewModelScope.launch {
+            _backupState.value = BackupUiState(isBusy = true, statusMessage = "Exporting library backup…")
+            val result = container.backupRestoreManager.exportFullBackup(uri)
+            _backupState.value = result.fold(
+                onSuccess = { s ->
+                    BackupUiState(
+                        isBusy = false,
+                        statusMessage = "Backed up ${s.likedCount} likes, ${s.playlistsCount} playlists, ${s.savedAlbumsCount} albums & ${s.historyCount} plays."
+                    )
+                },
+                onFailure = { e ->
+                    BackupUiState(
+                        isBusy = false,
+                        statusMessage = "Backup failed: ${e.localizedMessage ?: "Unknown error"}"
+                    )
+                }
+            )
+        }
+    }
+
+    fun restoreFullBackup(uri: Uri) {
+        viewModelScope.launch {
+            _backupState.value = BackupUiState(isBusy = true, statusMessage = "Restoring library backup…")
+            val result = container.backupRestoreManager.importFullBackup(uri)
+            _backupState.value = result.fold(
+                onSuccess = { s ->
+                    BackupUiState(
+                        isBusy = false,
+                        statusMessage = "Restored ${s.tracksCount} tracks, ${s.likedCount} likes, ${s.playlistsCount} playlists & ${s.savedAlbumsCount} albums."
+                    )
+                },
+                onFailure = { e ->
+                    BackupUiState(
+                        isBusy = false,
+                        statusMessage = "Restore failed: ${e.localizedMessage ?: "Invalid backup JSON"}"
+                    )
+                }
+            )
+        }
+    }
+
+    fun clearBackupMessage() {
+        _backupState.value = _backupState.value.copy(statusMessage = null)
+    }
 
     fun signInWithEmail(displayName: String, email: String) {
         viewModelScope.launch {

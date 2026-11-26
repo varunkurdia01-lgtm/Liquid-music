@@ -1,10 +1,12 @@
 package com.example.ui.screens
 
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,6 +32,8 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AudioFile
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.FileDownload
+import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.RemoveCircleOutline
@@ -58,6 +62,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.domain.model.AlbumSummary
+import com.example.domain.model.MusicSource
 import com.example.domain.model.Playlist
 import com.example.domain.model.Track
 import com.example.ui.glass.LiquidGlassButton
@@ -73,7 +79,8 @@ import com.example.ui.theme.MistSecondary
 private enum class LibrarySegment(val label: String) {
     PLAYLISTS("Playlists"),
     LIKED("Liked Songs"),
-    DOWNLOADED("Downloaded"),
+    ALBUMS("Saved Albums"),
+    DOWNLOADED("Downloads"),
     LOCAL("Local Files")
 }
 
@@ -81,10 +88,12 @@ private enum class LibrarySegment(val label: String) {
 fun LibraryScreen(
     playlists: List<Playlist>,
     likedTracks: List<Track>,
+    savedAlbums: List<AlbumSummary>,
     downloadedTracks: List<Track>,
     localTracks: List<Track>,
     hasAudioPermission: Boolean,
     requiredAudioPermission: String,
+    transferStatus: String?,
     activeTrackId: String?,
     isPlaying: Boolean,
     likedTrackIds: Set<String>,
@@ -95,6 +104,10 @@ fun LibraryScreen(
     onUpdatePlaylist: (Playlist, String, String, String) -> Unit,
     onDeletePlaylist: (Long) -> Unit,
     onRemoveTrackFromPlaylist: (Long, String) -> Unit,
+    onExportPlaylistM3u8: (Playlist, Uri) -> Unit,
+    onImportPlaylistUri: (Uri) -> Unit,
+    onClearTransferStatus: () -> Unit,
+    onOpenAlbum: (String, MusicSource) -> Unit,
     onPlayQueue: (List<Track>, Int) -> Unit,
     onToggleLike: (Track) -> Unit,
     onToggleDownload: (Track) -> Unit,
@@ -112,10 +125,22 @@ fun LibraryScreen(
         if (granted) onAudioPermissionGranted()
     }
 
+    // Zero-permission SAF Playlist Import (.m3u8 / .json)
+    val importPlaylistLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) onImportPlaylistUri(uri)
+    }
+
     val openedPlaylist = playlists.firstOrNull { it.id == openedPlaylistId }
 
     if (openedPlaylist != null) {
         BackHandler { openedPlaylistId = null }
+        val exportM3u8Launcher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.CreateDocument("audio/x-mpegurl")
+        ) { uri ->
+            if (uri != null) onExportPlaylistM3u8(openedPlaylist, uri)
+        }
         PlaylistDetailView(
             playlist = openedPlaylist,
             activeTrackId = activeTrackId,
@@ -127,6 +152,10 @@ fun LibraryScreen(
             onEdit = {
                 editingPlaylist = openedPlaylist
                 showPlaylistEditor = true
+            },
+            onExportM3u8 = {
+                val safeName = openedPlaylist.name.replace(Regex("[^a-zA-Z0-9_\\- ]"), "").ifBlank { "playlist" }
+                exportM3u8Launcher.launch("$safeName.m3u8")
             },
             onDelete = {
                 onDeletePlaylist(openedPlaylist.id)
@@ -153,35 +182,70 @@ fun LibraryScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text("Your Library", style = MaterialTheme.typography.headlineLarge, color = FrostWhite)
                         Text(
-                            "${playlists.size} playlists · ${likedTracks.size} liked · ${localTracks.size} local",
+                            "${playlists.size} playlists · ${likedTracks.size} liked · ${savedAlbums.size} albums",
                             style = MaterialTheme.typography.bodySmall,
                             color = MistSecondary
                         )
                     }
-                    LiquidGlassButton(
-                        onClick = {
-                            editingPlaylist = null
-                            showPlaylistEditor = true
-                        },
-                        accentGlow = true,
-                        cornerRadius = 18.dp,
-                        modifier = Modifier
-                            .height(44.dp)
-                            .testTag("create_playlist_button")
-                    ) {
-                        Row(
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        LiquidGlassButton(
+                            onClick = { importPlaylistLauncher.launch(arrayOf("*/*")) },
+                            cornerRadius = 18.dp,
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(horizontal = 14.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                .size(44.dp)
+                                .testTag("import_playlist_button")
                         ) {
-                            Icon(Icons.Rounded.Add, contentDescription = null, tint = FrostWhite, modifier = Modifier.size(18.dp))
-                            Text("New", style = MaterialTheme.typography.labelLarge, color = FrostWhite)
+                            Icon(
+                                imageVector = Icons.Rounded.FileUpload,
+                                contentDescription = "Import M3U8 or JSON playlist",
+                                tint = palette.secondaryGlow,
+                                modifier = Modifier.align(Alignment.Center).size(20.dp)
+                            )
                         }
+                        LiquidGlassButton(
+                            onClick = {
+                                editingPlaylist = null
+                                showPlaylistEditor = true
+                            },
+                            accentGlow = true,
+                            cornerRadius = 18.dp,
+                            modifier = Modifier
+                                .height(44.dp)
+                                .testTag("create_playlist_button")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .padding(horizontal = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(Icons.Rounded.Add, contentDescription = null, tint = FrostWhite, modifier = Modifier.size(18.dp))
+                                Text("New", style = MaterialTheme.typography.labelLarge, color = FrostWhite)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!transferStatus.isNullOrBlank()) {
+                item(key = "transfer_status_banner") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(Color(0x55141E36))
+                            .border(1.dp, palette.primaryGlow.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+                            .clickable(onClick = onClearTransferStatus)
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(transferStatus, style = MaterialTheme.typography.bodySmall, color = FrostWhite, modifier = Modifier.weight(1f))
+                        Text("OK", style = MaterialTheme.typography.labelSmall, color = palette.primaryGlow)
                     }
                 }
             }
@@ -204,8 +268,8 @@ fun LibraryScreen(
                     if (playlists.isEmpty()) {
                         item(key = "empty_playlists") {
                             EmptyLibraryCard(
-                                title = "Create your first custom playlist",
-                                subtitle = "Mix online streams and on-device FLAC/MP3 tracks in the same playlist with custom cover art.",
+                                title = "Create or import a playlist",
+                                subtitle = "Mix YouTube Music, JioSaavn & local FLAC/MP3 tracks, or import an M3U8/JSON playlist file.",
                                 actionLabel = "Create Playlist",
                                 onAction = {
                                     editingPlaylist = null
@@ -282,7 +346,7 @@ fun LibraryScreen(
                         item(key = "play_all_liked") {
                             PlayAllHeader(count = likedTracks.size, onPlay = { onPlayQueue(likedTracks, 0) }, onShuffle = { onPlayQueue(likedTracks.shuffled(), 0) })
                         }
-                        itemsIndexed(likedTracks, key = { _, t -> "liked_${t.id}" }) { idx, track ->
+                        itemsIndexed(likedTracks, key = { idx, t -> "liked_${idx}_${t.id}" }) { idx, track ->
                             TrackRowItem(
                                 track = track,
                                 isActive = track.id == activeTrackId,
@@ -298,19 +362,67 @@ fun LibraryScreen(
                     }
                 }
 
+                LibrarySegment.ALBUMS -> {
+                    if (savedAlbums.isEmpty()) {
+                        item(key = "empty_saved_albums") {
+                            EmptyLibraryCard(
+                                title = "No Saved Albums yet",
+                                subtitle = "Open any album from Home or Search and tap the bookmark icon to keep it in your Library."
+                            )
+                        }
+                    } else {
+                        items(savedAlbums, key = { "saved_alb_${it.id}" }) { album ->
+                            LiquidGlassSurface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onOpenAlbum(album.browseId, album.sourceProvider) }
+                                    .testTag("saved_album_${album.id}"),
+                                cornerRadius = 20.dp,
+                                useRefractionShell = false
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    TrackArtwork(
+                                        artworkUrl = album.artworkUrl,
+                                        contentDescription = album.title,
+                                        cornerRadius = 14.dp,
+                                        modifier = Modifier.size(60.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(14.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(album.title, style = MaterialTheme.typography.titleMedium, color = FrostWhite, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(
+                                            text = listOf(album.artist, album.year).filter { it.isNotBlank() }.joinToString(" · "),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MistSecondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(album.sourceProvider.displayName, style = MaterialTheme.typography.labelSmall, color = palette.secondaryGlow)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 LibrarySegment.DOWNLOADED -> {
                     if (downloadedTracks.isEmpty()) {
                         item(key = "empty_downloads") {
                             EmptyLibraryCard(
                                 title = "No Offline Downloads",
-                                subtitle = "Tap the download button on any track or in Now Playing to save it locally for offline listening."
+                                subtitle = "Tap the download button on any track, album, or in Now Playing to save it locally for offline listening."
                             )
                         }
                     } else {
                         item(key = "play_all_downloads") {
                             PlayAllHeader(count = downloadedTracks.size, onPlay = { onPlayQueue(downloadedTracks, 0) }, onShuffle = { onPlayQueue(downloadedTracks.shuffled(), 0) })
                         }
-                        itemsIndexed(downloadedTracks, key = { _, t -> "dl_${t.id}" }) { idx, track ->
+                        itemsIndexed(downloadedTracks, key = { idx, t -> "dl_${idx}_${t.id}" }) { idx, track ->
                             TrackRowItem(
                                 track = track,
                                 isActive = track.id == activeTrackId,
@@ -329,7 +441,7 @@ fun LibraryScreen(
                 LibrarySegment.LOCAL -> {
                     if (!hasAudioPermission) {
                         item(key = "local_permission_card") {
-                            LiquidGlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 24.dp) {
+                            LiquidGlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 24.dp, useRefractionShell = false) {
                                 Column(
                                     modifier = Modifier.padding(20.dp),
                                     verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -381,7 +493,7 @@ fun LibraryScreen(
                         item(key = "play_all_local") {
                             PlayAllHeader(count = localTracks.size, onPlay = { onPlayQueue(localTracks, 0) }, onShuffle = { onPlayQueue(localTracks.shuffled(), 0) })
                         }
-                        itemsIndexed(localTracks, key = { _, t -> "local_${t.id}" }) { idx, track ->
+                        itemsIndexed(localTracks, key = { idx, t -> "local_${idx}_${t.id}" }) { idx, track ->
                             TrackRowItem(
                                 track = track,
                                 isActive = track.id == activeTrackId,
@@ -427,6 +539,7 @@ private fun PlaylistDetailView(
     bottomPadding: Dp,
     onBack: () -> Unit,
     onEdit: () -> Unit,
+    onExportM3u8: () -> Unit,
     onDelete: () -> Unit,
     onPlayQueue: (List<Track>, Int) -> Unit,
     onToggleLike: (Track) -> Unit,
@@ -434,6 +547,7 @@ private fun PlaylistDetailView(
     onAddToPlaylist: (Track) -> Unit,
     onRemoveTrack: (String) -> Unit
 ) {
+    val palette = LocalLiquidPalette.current
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -452,6 +566,9 @@ private fun PlaylistDetailView(
                     Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = FrostWhite)
                 }
                 Row {
+                    IconButton(onClick = onExportM3u8, modifier = Modifier.testTag("playlist_detail_export")) {
+                        Icon(Icons.Rounded.FileDownload, contentDescription = "Export M3U8 playlist", tint = palette.secondaryGlow)
+                    }
                     IconButton(onClick = onEdit, modifier = Modifier.testTag("playlist_detail_edit")) {
                         Icon(Icons.Rounded.Edit, contentDescription = "Edit playlist", tint = FrostWhite)
                     }
@@ -463,7 +580,7 @@ private fun PlaylistDetailView(
         }
 
         item(key = "detail_hero") {
-            LiquidGlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 26.dp) {
+            LiquidGlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 26.dp, useRefractionShell = false) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -502,7 +619,7 @@ private fun PlaylistDetailView(
                 )
             }
         } else {
-            itemsIndexed(playlist.tracks, key = { _, t -> "pltrack_${t.id}" }) { idx, track ->
+            itemsIndexed(playlist.tracks, key = { idx, t -> "pltrack_${idx}_${t.id}" }) { idx, track ->
                 TrackRowItem(
                     track = track,
                     isActive = track.id == activeTrackId,
@@ -581,7 +698,7 @@ private fun EmptyLibraryCard(
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null
 ) {
-    LiquidGlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 24.dp) {
+    LiquidGlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 24.dp, useRefractionShell = false) {
         Column(
             modifier = Modifier.padding(22.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -615,7 +732,6 @@ private fun PlaylistEditorDialog(
     var description by remember { mutableStateOf(existing?.description.orEmpty()) }
     var coverUri by remember { mutableStateOf(existing?.coverArtUri.orEmpty()) }
 
-    // Zero-permission Android Photo Picker (Google Play policy compliant)
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->

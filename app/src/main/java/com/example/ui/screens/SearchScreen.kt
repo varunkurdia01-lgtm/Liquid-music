@@ -22,17 +22,23 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BookmarkAdd
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Clear
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DownloadDone
+import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlaylistAdd
+import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -49,13 +55,19 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.domain.model.AlbumSummary
+import com.example.domain.model.ArtistSummary
+import com.example.domain.model.MusicSource
+import com.example.domain.model.PlaylistSummary
 import com.example.domain.model.SourceType
 import com.example.domain.model.Track
 import com.example.domain.model.VibeDjResult
+import com.example.ui.components.EchoSurfaceCard
 import com.example.ui.glass.AnimatedWaveformBars
 import com.example.ui.glass.LiquidGlassButton
 import com.example.ui.glass.LiquidGlassChip
@@ -75,18 +87,26 @@ import com.example.ui.viewmodel.VibeDjUiState
 @Composable
 fun SearchScreen(
     uiState: DiscoveryUiState,
+    searchHistory: List<String>,
     activeTrackId: String?,
     isPlaying: Boolean,
     likedTrackIds: Set<String>,
     downloadedTrackIds: Set<String>,
     bottomPadding: Dp,
     onSearchQueryChange: (String) -> Unit,
+    onSubmitSearch: (String) -> Unit,
+    onDeleteHistoryItem: (String) -> Unit,
+    onClearHistory: () -> Unit,
     onSearchFilterSelected: (SearchFilter) -> Unit,
     onVibePromptChange: (String) -> Unit,
     onGenerateVibe: (String?) -> Unit,
     onUseOfflineVibe: (String) -> Unit,
     onSaveVibePlaylist: (VibeDjResult) -> Unit,
     onPlayQueue: (List<Track>, Int) -> Unit,
+    onStartRadio: (Track) -> Unit,
+    onOpenAlbum: (String, MusicSource) -> Unit,
+    onOpenArtist: (String, MusicSource) -> Unit,
+    onOpenPlaylistSummary: (PlaylistSummary) -> Unit,
     onToggleLike: (Track) -> Unit,
     onToggleDownload: (Track) -> Unit,
     onAddToPlaylist: (Track) -> Unit
@@ -143,6 +163,8 @@ fun SearchScreen(
                         }
                     },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { onSubmitSearch(uiState.searchQuery) }),
                     shape = RoundedCornerShape(22.dp),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = FrostWhite,
@@ -160,11 +182,35 @@ fun SearchScreen(
             }
         }
 
-        // Dual Search Results when query is active
+        // Unified Search Results when query is active
         if (uiState.searchQuery.isNotBlank()) {
+            // Instant Suggestions Strip
+            if (uiState.searchSuggestions.isNotEmpty()) {
+                item(key = "search_suggestions") {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(uiState.searchSuggestions.take(6), key = { "sug_$it" }) { suggestion ->
+                            Row(
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(Color(0x55141C32))
+                                    .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
+                                    .clickable { onSubmitSearch(suggestion) }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(Icons.Rounded.Search, contentDescription = null, tint = palette.secondaryGlow, modifier = Modifier.size(14.dp))
+                                Text(suggestion, style = MaterialTheme.typography.bodySmall, color = FrostWhite, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Category Filter Tabs
             item(key = "search_filters") {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SearchFilter.entries.forEach { filter ->
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(SearchFilter.entries, key = { it.name }) { filter ->
                         LiquidGlassChip(
                             label = filter.label,
                             selected = uiState.searchFilter == filter,
@@ -183,37 +229,211 @@ fun SearchScreen(
                             .padding(vertical = 32.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        CircularProgressIndicator(color = palette.secondaryGlow, strokeWidth = 2.5.dp)
-                    }
-                }
-            } else if (uiState.displayedSearchResults.isEmpty()) {
-                item(key = "search_empty") {
-                    LiquidGlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 22.dp) {
-                        Text(
-                            text = "No tracks matched \"${uiState.searchQuery}\" in ${uiState.searchFilter.label}.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MistSecondary,
-                            modifier = Modifier.padding(20.dp)
-                        )
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = palette.secondaryGlow, strokeWidth = 2.5.dp)
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text("Searching YouTube Music & Fallback…", style = MaterialTheme.typography.bodySmall, color = MistSecondary)
+                        }
                     }
                 }
             } else {
-                val results = uiState.displayedSearchResults
-                itemsIndexed(results, key = { _, t -> "search_${t.id}" }) { idx, track ->
-                    TrackRowItem(
-                        track = track,
-                        isActive = track.id == activeTrackId,
-                        isPlaying = isPlaying && track.id == activeTrackId,
-                        isLiked = likedTrackIds.contains(track.id),
-                        isDownloaded = downloadedTrackIds.contains(track.id),
-                        onClick = { onPlayQueue(results, idx) },
-                        onToggleLike = { onToggleLike(track) },
-                        onToggleDownload = { onToggleDownload(track) },
-                        onAddToPlaylist = { onAddToPlaylist(track) }
-                    )
+                val results = uiState.searchResults
+                val showSongs = uiState.searchFilter in setOf(SearchFilter.ALL, SearchFilter.SONGS, SearchFilter.LOCAL)
+                val showAlbums = uiState.searchFilter in setOf(SearchFilter.ALL, SearchFilter.ALBUMS)
+                val showArtists = uiState.searchFilter in setOf(SearchFilter.ALL, SearchFilter.ARTISTS)
+                val showPlaylists = uiState.searchFilter in setOf(SearchFilter.ALL, SearchFilter.PLAYLISTS)
+
+                val displayedSongs = uiState.displayedSongs
+                val extensionSongs = if (showSongs && uiState.searchFilter != SearchFilter.LOCAL) results.extensionSongs else emptyList()
+                val hasAnyContent = (showSongs && (displayedSongs.isNotEmpty() || extensionSongs.isNotEmpty())) ||
+                    (showAlbums && results.albums.isNotEmpty()) ||
+                    (showArtists && results.artists.isNotEmpty()) ||
+                    (showPlaylists && results.playlists.isNotEmpty())
+
+                // Provider attribution pill
+                if (hasAnyContent && uiState.searchFilter != SearchFilter.LOCAL) {
+                    item(key = "search_provider_pill") {
+                        Text(
+                            text = if (results.usedFallback) {
+                                "Results via ${results.activeSource.displayName} (Automatic Fallback)"
+                            } else {
+                                "Results via ${results.activeSource.displayName}"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.secondaryGlow
+                        )
+                    }
+                }
+
+                if (!hasAnyContent) {
+                    item(key = "search_empty") {
+                        LiquidGlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 22.dp, useRefractionShell = false) {
+                            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = results.errorMessage ?: "No ${uiState.searchFilter.label.lowercase()} matched \"${uiState.searchQuery}\".",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MistSecondary
+                                )
+                                LiquidGlassButton(
+                                    onClick = { onSubmitSearch(uiState.searchQuery) },
+                                    modifier = Modifier.height(40.dp)
+                                ) {
+                                    Text("Retry Search", style = MaterialTheme.typography.labelLarge, color = FrostWhite, modifier = Modifier.align(Alignment.Center).padding(horizontal = 16.dp))
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Artists Section
+                    if (showArtists && results.artists.isNotEmpty()) {
+                        item(key = "search_artists_header") {
+                            Text("Artists", style = MaterialTheme.typography.titleLarge, color = FrostWhite)
+                        }
+                        items(results.artists.take(if (uiState.searchFilter == SearchFilter.ALL) 3 else 15), key = { "s_art_${it.id}" }) { artist ->
+                            SearchArtistRow(artist = artist, onClick = { onOpenArtist(artist.browseId, artist.sourceProvider) })
+                        }
+                    }
+
+                    // Albums Section
+                    if (showAlbums && results.albums.isNotEmpty()) {
+                        item(key = "search_albums_header") {
+                            Text("Albums & Singles", style = MaterialTheme.typography.titleLarge, color = FrostWhite)
+                        }
+                        items(results.albums.take(if (uiState.searchFilter == SearchFilter.ALL) 4 else 18), key = { "s_alb_${it.id}" }) { album ->
+                            SearchAlbumRow(album = album, onClick = { onOpenAlbum(album.browseId, album.sourceProvider) })
+                        }
+                    }
+
+                    // Playlists Section
+                    if (showPlaylists && results.playlists.isNotEmpty()) {
+                        item(key = "search_playlists_header") {
+                            Text("Community Playlists", style = MaterialTheme.typography.titleLarge, color = FrostWhite)
+                        }
+                        items(results.playlists.take(if (uiState.searchFilter == SearchFilter.ALL) 4 else 16), key = { "s_pl_${it.id}" }) { playlist ->
+                            SearchPlaylistRow(playlist = playlist, onClick = { onOpenPlaylistSummary(playlist) })
+                        }
+                    }
+
+                    // Inline Echo Extension Results Section (FLAC / Custom Addon Servers)
+                    if (extensionSongs.isNotEmpty()) {
+                        item(key = "search_extensions_header") {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Extension,
+                                    contentDescription = null,
+                                    tint = EmeraldPulse,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Text("From Echo Extensions", style = MaterialTheme.typography.titleLarge, color = FrostWhite)
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(EmeraldPulse.copy(alpha = 0.16f))
+                                        .border(1.dp, EmeraldPulse.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                                ) {
+                                    Text("${extensionSongs.size} ADDON", style = MaterialTheme.typography.labelSmall, color = EmeraldPulse)
+                                }
+                            }
+                        }
+                        itemsIndexed(extensionSongs, key = { idx, t -> "ext_${idx}_${t.id}" }) { idx, track ->
+                            TrackRowItem(
+                                track = track,
+                                isActive = track.id == activeTrackId,
+                                isPlaying = isPlaying && track.id == activeTrackId,
+                                isLiked = likedTrackIds.contains(track.id),
+                                isDownloaded = downloadedTrackIds.contains(track.id),
+                                onClick = { onPlayQueue(extensionSongs, idx) },
+                                onToggleLike = { onToggleLike(track) },
+                                onToggleDownload = { onToggleDownload(track) },
+                                onAddToPlaylist = { onAddToPlaylist(track) }
+                            )
+                        }
+                    }
+
+                    // Songs Section
+                    if (showSongs && displayedSongs.isNotEmpty()) {
+                        if (uiState.searchFilter == SearchFilter.ALL) {
+                            item(key = "search_songs_header") {
+                                Text("Songs", style = MaterialTheme.typography.titleLarge, color = FrostWhite)
+                            }
+                        }
+                        itemsIndexed(displayedSongs, key = { idx, t -> "search_${idx}_${t.id}" }) { idx, track ->
+                            TrackRowItem(
+                                track = track,
+                                isActive = track.id == activeTrackId,
+                                isPlaying = isPlaying && track.id == activeTrackId,
+                                isLiked = likedTrackIds.contains(track.id),
+                                isDownloaded = downloadedTrackIds.contains(track.id),
+                                onClick = { onPlayQueue(displayedSongs, idx) },
+                                onToggleLike = { onToggleLike(track) },
+                                onToggleDownload = { onToggleDownload(track) },
+                                onAddToPlaylist = { onAddToPlaylist(track) },
+                                trailingExtra = if (track.sourceType == SourceType.ONLINE) {
+                                    {
+                                        IconButton(onClick = { onStartRadio(track) }, modifier = Modifier.size(38.dp)) {
+                                            Icon(Icons.Rounded.Radio, contentDescription = "Start radio", tint = palette.secondaryGlow, modifier = Modifier.size(19.dp))
+                                        }
+                                    }
+                                } else null
+                            )
+                        }
+                    }
                 }
             }
         } else {
+            // Recent Search History Chips (from Room)
+            if (searchHistory.isNotEmpty()) {
+                item(key = "recent_searches") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Recent Searches", style = MaterialTheme.typography.titleMedium, color = FrostWhite)
+                            Text(
+                                text = "Clear",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = palette.secondaryGlow,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(onClick = onClearHistory)
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(searchHistory.take(10), key = { "hist_$it" }) { query ->
+                                Row(
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .background(Color(0x55141A2E))
+                                        .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
+                                        .clickable { onSubmitSearch(query) }
+                                        .padding(start = 10.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(Icons.Rounded.History, contentDescription = null, tint = MistSecondary, modifier = Modifier.size(15.dp))
+                                    Text(query, style = MaterialTheme.typography.bodySmall, color = FrostWhite, maxLines = 1)
+                                    Icon(
+                                        imageVector = Icons.Rounded.Close,
+                                        contentDescription = "Remove search",
+                                        tint = MistSecondary,
+                                        modifier = Modifier
+                                            .size(16.dp)
+                                            .clickable { onDeleteHistoryItem(query) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Live Gemini AI Vibe DJ Hero Card
             item(key = "vibe_dj_card") {
                 LiquidGlassSurface(
@@ -221,7 +441,8 @@ fun SearchScreen(
                     cornerRadius = 26.dp,
                     tintColor = DeepIndigoAurora,
                     surfaceAlpha = 0.56f,
-                    highlightAccent = palette.secondaryGlow
+                    highlightAccent = palette.secondaryGlow,
+                    useRefractionShell = false
                 ) {
                     Column(
                         modifier = Modifier.padding(18.dp),
@@ -253,7 +474,7 @@ fun SearchScreen(
                                     color = FrostWhite
                                 )
                                 Text(
-                                    text = "Live Gemini 3.8 Flash playlist curator",
+                                    text = "Gemini 3.8 Flash + Unified InnerTube/JioSaavn Engine",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = palette.secondaryGlow
                                 )
@@ -319,7 +540,6 @@ fun SearchScreen(
                             }
                         }
 
-                        // Vibe DJ State Output
                         when (val vibe = uiState.vibeState) {
                             is VibeDjUiState.Error -> {
                                 Column(
@@ -331,22 +551,10 @@ fun SearchScreen(
                                         .padding(12.dp),
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Text(
-                                        text = vibe.message,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = FrostWhite
-                                    )
+                                    Text(text = vibe.message, style = MaterialTheme.typography.bodySmall, color = FrostWhite)
                                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        LiquidGlassChip(
-                                            label = "Retry Gemini",
-                                            selected = true,
-                                            onClick = { onGenerateVibe(vibe.lastPrompt) }
-                                        )
-                                        LiquidGlassChip(
-                                            label = "Use Offline Engine",
-                                            selected = false,
-                                            onClick = { onUseOfflineVibe(vibe.lastPrompt) }
-                                        )
+                                        LiquidGlassChip(label = "Retry Gemini", selected = true, onClick = { onGenerateVibe(vibe.lastPrompt) })
+                                        LiquidGlassChip(label = "Use Offline Engine", selected = false, onClick = { onUseOfflineVibe(vibe.lastPrompt) })
                                     }
                                 }
                             }
@@ -392,7 +600,7 @@ fun SearchScreen(
                                             )
                                         )
                                         .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(22.dp))
-                                        .clickable { onSearchQueryChange(query) }
+                                        .clickable { onSubmitSearch(query) }
                                         .padding(14.dp)
                                         .testTag("genre_tile_${label.lowercase().replace(" ", "_")}"),
                                     contentAlignment = Alignment.BottomStart
@@ -408,6 +616,122 @@ fun SearchScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SearchArtistRow(artist: ArtistSummary, onClick: () -> Unit) {
+    val palette = LocalLiquidPalette.current
+    LiquidGlassSurface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .testTag("search_artist_${artist.id}"),
+        cornerRadius = 18.dp,
+        useRefractionShell = false
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TrackArtwork(
+                artworkUrl = artist.thumbnailUrl,
+                contentDescription = artist.name,
+                cornerRadius = 26.dp,
+                modifier = Modifier
+                    .size(52.dp)
+                    .border(1.dp, palette.secondaryGlow.copy(alpha = 0.45f), CircleShape)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(artist.name, style = MaterialTheme.typography.titleMedium, color = FrostWhite, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(artist.subtitle.ifBlank { "Artist" }, style = MaterialTheme.typography.bodySmall, color = MistSecondary, maxLines = 1)
+            }
+            Text("VIEW", style = MaterialTheme.typography.labelSmall, color = palette.primaryGlow, modifier = Modifier.padding(end = 6.dp))
+        }
+    }
+}
+
+@Composable
+private fun SearchAlbumRow(album: AlbumSummary, onClick: () -> Unit) {
+    val palette = LocalLiquidPalette.current
+    LiquidGlassSurface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .testTag("search_album_${album.id}"),
+        cornerRadius = 18.dp,
+        useRefractionShell = false
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TrackArtwork(
+                artworkUrl = album.artworkUrl,
+                contentDescription = album.title,
+                cornerRadius = 12.dp,
+                modifier = Modifier.size(52.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(album.title, style = MaterialTheme.typography.titleMedium, color = FrostWhite, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    text = buildString {
+                        append(album.artist.ifBlank { "Album" })
+                        if (album.year.isNotBlank()) append(" · ${album.year}")
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MistSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Text("ALBUM", style = MaterialTheme.typography.labelSmall, color = palette.secondaryGlow, modifier = Modifier.padding(end = 6.dp))
+        }
+    }
+}
+
+@Composable
+private fun SearchPlaylistRow(playlist: PlaylistSummary, onClick: () -> Unit) {
+    val palette = LocalLiquidPalette.current
+    LiquidGlassSurface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .testTag("search_playlist_${playlist.id}"),
+        cornerRadius = 18.dp,
+        useRefractionShell = false
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TrackArtwork(
+                artworkUrl = playlist.artworkUrl,
+                contentDescription = playlist.title,
+                cornerRadius = 12.dp,
+                modifier = Modifier.size(52.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(playlist.title, style = MaterialTheme.typography.titleMedium, color = FrostWhite, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    text = listOf(playlist.author, playlist.trackCountText).filter { it.isNotBlank() }.joinToString(" · ").ifBlank { "Playlist" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MistSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Icon(Icons.Rounded.PlayArrow, contentDescription = "Play playlist", tint = palette.primaryGlow, modifier = Modifier.padding(end = 4.dp))
         }
     }
 }
@@ -532,15 +856,14 @@ fun TrackRowItem(
     trailingExtra: (@Composable () -> Unit)? = null
 ) {
     val palette = LocalLiquidPalette.current
-    LiquidGlassSurface(
+    EchoSurfaceCard(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
             .testTag("track_row_${track.id}"),
         cornerRadius = 18.dp,
-        surfaceAlpha = if (isActive) 0.72f else 0.48f,
-        highlightAccent = if (isActive) palette.secondaryGlow else null,
-        useRefractionShell = false
+        elevated = isActive,
+        accentBorder = if (isActive) palette.secondaryGlow.copy(alpha = 0.6f) else null,
+        onClick = onClick
     ) {
         Row(
             modifier = Modifier
