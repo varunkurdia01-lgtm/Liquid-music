@@ -323,21 +323,21 @@ enum class GlassOpticalPreset(
     val blurRadiusDp: Float,
     val chromaticAberration: Boolean
 ) {
-    BALANCED_IOS26("iOS 26 Balanced", 1.0f, 380f, 0.62f, 18f, 34f, 10f, true),
-    ULTRA_PRISM("Ultra Prism", 1.12f, 310f, 0.50f, 26f, 54f, 6f, true),
-    SOFT_FROSTED("Soft Frosted", 0.96f, 460f, 0.78f, 10f, 18f, 20f, false),
-    CUSTOM("Custom", 1.0f, 380f, 0.62f, 18f, 34f, 10f, true)
+    BALANCED_IOS26("iOS 26 Liquid Glass", 1.0f, 520f, 0.68f, 14f, 28f, 6f, true),
+    ULTRA_PRISM("Ultra Crystal Prism", 1.08f, 440f, 0.56f, 22f, 48f, 3f, true),
+    SOFT_FROSTED("Soft Frosted", 0.98f, 560f, 0.78f, 10f, 18f, 16f, false),
+    CUSTOM("Custom", 1.0f, 520f, 0.68f, 14f, 28f, 6f, true)
 }
 
 @Immutable
 data class LiquidGlassConfig(
     val opticalPreset: GlassOpticalPreset = GlassOpticalPreset.BALANCED_IOS26,
     val pillScale: Float = 1.0f,
-    val springStiffness: Float = 380f,
-    val springDamping: Float = 0.62f,
-    val refractionHeightDp: Float = 18f,
-    val refractionAmountDp: Float = 34f,
-    val blurRadiusDp: Float = 10f,
+    val springStiffness: Float = 520f,
+    val springDamping: Float = 0.68f,
+    val refractionHeightDp: Float = 14f,
+    val refractionAmountDp: Float = 28f,
+    val blurRadiusDp: Float = 6f,
     val chromaticAberration: Boolean = true
 )
 

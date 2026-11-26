@@ -60,6 +60,7 @@ import com.example.ui.components.EchoSurfaceCard
 import com.example.ui.glass.AnimatedWaveformBars
 import com.example.ui.glass.LiquidGlassButton
 import com.example.ui.glass.LiquidGlassChip
+import com.example.ui.glass.LiquidGlassIconButton
 import com.example.ui.glass.LiquidGlassSurface
 import com.example.ui.glass.TrackArtwork
 import com.example.ui.theme.FrostWhite
@@ -160,77 +161,46 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(
+                    LiquidGlassIconButton(
+                        icon = Icons.Rounded.Shuffle,
+                        contentDescription = "Surprise Me Shuffle",
                         onClick = onSurpriseMe,
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(Color(0x55141A2E))
-                            .border(1.dp, palette.secondaryGlow.copy(alpha = 0.35f), CircleShape)
-                            .testTag("home_surprise_me_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Shuffle,
-                            contentDescription = "Surprise Me Shuffle",
-                            tint = palette.secondaryGlow,
-                            modifier = Modifier.size(19.dp)
-                        )
-                    }
+                        size = 42.dp,
+                        iconSize = 19.dp,
+                        iconTint = palette.secondaryGlow,
+                        modifier = Modifier.testTag("home_surprise_me_button")
+                    )
 
-                    IconButton(
+                    LiquidGlassIconButton(
+                        icon = Icons.Rounded.Refresh,
+                        contentDescription = "Refresh Discovery",
                         onClick = onRefresh,
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(Color(0x55141A2E))
-                            .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
-                            .testTag("home_refresh_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Refresh,
-                            contentDescription = "Refresh Discovery",
-                            tint = FrostWhite,
-                            modifier = Modifier.size(19.dp)
-                        )
-                    }
+                        size = 42.dp,
+                        iconSize = 19.dp,
+                        iconTint = FrostWhite,
+                        modifier = Modifier.testTag("home_refresh_button")
+                    )
 
-                    IconButton(
+                    LiquidGlassIconButton(
+                        icon = Icons.Rounded.Tune,
+                        contentDescription = "Open Sound Lab",
                         onClick = onOpenSoundLab,
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(Color(0x55141A2E))
-                            .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
-                            .testTag("home_sound_lab_shortcut")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Tune,
-                            contentDescription = "Open Sound Lab",
-                            tint = palette.primaryGlow,
-                            modifier = Modifier.size(19.dp)
-                        )
-                    }
+                        size = 42.dp,
+                        iconSize = 19.dp,
+                        iconTint = palette.primaryGlow,
+                        modifier = Modifier.testTag("home_sound_lab_shortcut")
+                    )
 
-                    IconButton(
+                    LiquidGlassIconButton(
+                        icon = Icons.Rounded.Settings,
+                        contentDescription = "Open Echo Settings",
                         onClick = onOpenProfile,
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(
-                                Brush.linearGradient(
-                                    listOf(palette.primaryGlow.copy(alpha = 0.35f), palette.deepAurora)
-                                )
-                            )
-                            .border(1.dp, palette.primaryGlow.copy(alpha = 0.6f), CircleShape)
-                            .testTag("home_settings_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Settings,
-                            contentDescription = "Open Echo Settings",
-                            tint = FrostWhite,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
+                        size = 42.dp,
+                        iconSize = 20.dp,
+                        iconTint = FrostWhite,
+                        tinted = true,
+                        modifier = Modifier.testTag("home_settings_button")
+                    )
                 }
             }
         }

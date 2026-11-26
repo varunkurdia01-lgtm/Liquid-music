@@ -48,8 +48,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -63,6 +67,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.domain.model.PlayerSliderStyle
+import com.example.ui.glass.AppleGlassTokens
 import com.example.ui.theme.FrostWhite
 import com.example.ui.theme.LocalLiquidPalette
 import com.example.ui.theme.LuminousRose
@@ -71,22 +76,30 @@ import kotlin.math.PI
 import kotlin.math.sin
 
 /**
- * Echo Music Material 3 tonal surface container:
- * Crisp 120Hz dark surface (zero nested blur overhead on scrollable feeds/settings cards),
- * leaving optical Liquid Glass exclusively for interactive buttons, floating dock, and sliders.
+ * Apple iOS 26 Dark Material Glass container:
+ * Crisp 120Hz neutral smoked-glass translucency with physical top-sheen and diagonal Fresnel specular
+ * hairline rim, keeping scrollable feeds & settings silky smooth while matching the floating optical dock.
  */
 @Composable
 fun EchoSurfaceCard(
     modifier: Modifier = Modifier,
-    cornerRadius: Dp = 20.dp,
+    cornerRadius: Dp = 22.dp,
     elevated: Boolean = false,
     accentBorder: Color? = null,
     onClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit
 ) {
     val shape = RoundedCornerShape(cornerRadius)
-    val bg = if (elevated) Color(0xFF161C2C) else Color(0xFF0F1422)
-    val borderColor = accentBorder ?: Color.White.copy(alpha = if (elevated) 0.11f else 0.07f)
+    val topBg = if (elevated) {
+        AppleGlassTokens.ElevatedDarkTint.copy(alpha = 0.80f)
+    } else {
+        AppleGlassTokens.NeutralDarkTint.copy(alpha = 0.72f)
+    }
+    val bottomBg = if (elevated) {
+        AppleGlassTokens.NeutralDarkTint.copy(alpha = 0.78f)
+    } else {
+        Color(0xFF0E121B).copy(alpha = 0.68f)
+    }
 
     val clickModifier = if (onClick != null) {
         Modifier.bounceClick(onClick = onClick)
@@ -98,17 +111,52 @@ fun EchoSurfaceCard(
         modifier = modifier
             .then(clickModifier)
             .clip(shape)
-            .background(bg)
-            .border(1.dp, borderColor, shape),
+            .background(Brush.verticalGradient(listOf(topBg, bottomBg)))
+            .drawWithContent {
+                drawContent()
+                val rPx = cornerRadius.toPx()
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = if (elevated) 0.08f else 0.055f),
+                            Color.Transparent
+                        ),
+                        startY = 0f,
+                        endY = size.height * 0.36f
+                    ),
+                    cornerRadius = CornerRadius(rPx, rPx)
+                )
+            }
+            .border(
+                width = 0.7.dp,
+                brush = if (accentBorder != null) {
+                    Brush.linearGradient(
+                        listOf(
+                            accentBorder.copy(alpha = 0.68f),
+                            accentBorder.copy(alpha = 0.22f),
+                            Color.White.copy(alpha = 0.18f)
+                        )
+                    )
+                } else {
+                    Brush.linearGradient(
+                        listOf(
+                            Color.White.copy(alpha = if (elevated) 0.30f else 0.24f),
+                            Color.White.copy(alpha = 0.05f),
+                            Color.White.copy(alpha = if (elevated) 0.16f else 0.12f)
+                        )
+                    )
+                },
+                shape = shape
+            ),
         content = content
     )
 }
 
 /**
- * Spring-physics tactile bounce modifier for every interactive tap across the app.
+ * High-stiffness iOS 26 spring-physics tactile bounce modifier for interactive taps across the app.
  */
 fun Modifier.bounceClick(
-    scaleDown: Float = 0.96f,
+    scaleDown: Float = 0.955f,
     enableHaptics: Boolean = false,
     onClick: () -> Unit
 ): Modifier = composed {
@@ -117,8 +165,8 @@ fun Modifier.bounceClick(
     val scale by animateFloatAsState(
         targetValue = if (pressed) scaleDown else 1f,
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMedium
+            dampingRatio = 0.68f,
+            stiffness = 660f
         ),
         label = "bounceClickScale"
     )
@@ -146,7 +194,7 @@ fun Modifier.bounceClick(
 }
 
 /**
- * Animated Heart-Burst Like Button with spring bounce and luminous rose pulse.
+ * Apple iOS 26 Circular Glass Heart-Burst Like Button with spring bounce and luminous rose tint.
  */
 @Composable
 fun AnimatedLikeButton(
@@ -155,14 +203,14 @@ fun AnimatedLikeButton(
     modifier: Modifier = Modifier,
     size: Dp = 44.dp,
     iconSize: Dp = 22.dp,
-    containerColor: Color = Color(0x33161D30)
+    containerColor: Color = Color.White.copy(alpha = 0.09f)
 ) {
     val haptics = LocalHapticFeedback.current
     val scale by animateFloatAsState(
         targetValue = if (isLiked) 1.14f else 1.0f,
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioLowBouncy,
-            stiffness = Spring.StiffnessMedium
+            dampingRatio = 0.56f,
+            stiffness = 620f
         ),
         label = "likeHeartScale"
     )
@@ -171,8 +219,8 @@ fun AnimatedLikeButton(
         animationSpec = tween(220),
         label = "likeHeartTint"
     )
-    val borderColor by animateColorAsState(
-        targetValue = if (isLiked) LuminousRose.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.14f),
+    val rimTop by animateColorAsState(
+        targetValue = if (isLiked) LuminousRose.copy(alpha = 0.70f) else Color.White.copy(alpha = 0.32f),
         animationSpec = tween(220),
         label = "likeHeartBorder"
     )
@@ -181,8 +229,14 @@ fun AnimatedLikeButton(
         modifier = modifier
             .size(size)
             .clip(CircleShape)
-            .background(if (isLiked) LuminousRose.copy(alpha = 0.18f) else containerColor)
-            .border(1.dp, borderColor, CircleShape)
+            .background(if (isLiked) LuminousRose.copy(alpha = 0.22f) else containerColor)
+            .border(
+                width = 0.75.dp,
+                brush = Brush.linearGradient(
+                    listOf(rimTop, Color.White.copy(alpha = 0.08f), rimTop.copy(alpha = 0.45f))
+                ),
+                shape = CircleShape
+            )
             .bounceClick(scaleDown = 0.88f) {
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 onClick()
@@ -201,7 +255,7 @@ fun AnimatedLikeButton(
 }
 
 /**
- * Echo Music Top-Bar Home / Flow mode pill switcher.
+ * Apple iOS 26 Liquid Glass Top-Bar Home / Flow segmented pill switcher.
  */
 @Composable
 fun EchoHomeModePill(
@@ -214,8 +268,18 @@ fun EchoHomeModePill(
     Row(
         modifier = modifier
             .clip(CircleShape)
-            .background(Color(0xFF13192B))
-            .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+            .background(AppleGlassTokens.NeutralDarkTint.copy(alpha = 0.72f))
+            .border(
+                width = 0.7.dp,
+                brush = Brush.linearGradient(
+                    listOf(
+                        Color.White.copy(alpha = 0.30f),
+                        Color.White.copy(alpha = 0.07f),
+                        Color.White.copy(alpha = 0.18f)
+                    )
+                ),
+                shape = CircleShape
+            )
             .padding(3.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -249,7 +313,7 @@ private fun ModePillSegment(
     testTag: String
 ) {
     val bg by animateColorAsState(
-        targetValue = if (selected) accent.copy(alpha = 0.22f) else Color.Transparent,
+        targetValue = if (selected) Color.White.copy(alpha = 0.16f) else Color.Transparent,
         animationSpec = tween(220),
         label = "modePillBg"
     )
@@ -259,8 +323,8 @@ private fun ModePillSegment(
         label = "modePillText"
     )
     val padH by animateDpAsState(
-        targetValue = if (selected) 13.dp else 10.dp,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        targetValue = if (selected) 14.dp else 11.dp,
+        animationSpec = spring(dampingRatio = 0.72f, stiffness = 560f),
         label = "modePillPad"
     )
 
@@ -269,12 +333,12 @@ private fun ModePillSegment(
             .clip(CircleShape)
             .background(bg)
             .border(
-                width = 1.dp,
-                color = if (selected) accent.copy(alpha = 0.55f) else Color.Transparent,
+                width = 0.65.dp,
+                color = if (selected) Color.White.copy(alpha = 0.36f) else Color.Transparent,
                 shape = CircleShape
             )
             .bounceClick(scaleDown = 0.94f, onClick = onClick)
-            .padding(horizontal = padH, vertical = 6.dp)
+            .padding(horizontal = padH, vertical = 6.5.dp)
             .testTag(testTag),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp)
@@ -288,7 +352,7 @@ private fun ModePillSegment(
         Text(
             text = label,
             style = MaterialTheme.typography.labelMedium,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
             color = textColor
         )
     }
@@ -296,7 +360,7 @@ private fun ModePillSegment(
 
 /**
  * Echo Music animated Now Playing seekbar supporting SQUIGGLY (live animated sine wave),
- * WAVY (gentle wave), and SLIM (minimal Material 3 bar) styles with smooth drag scrubbing.
+ * WAVY (gentle wave), and SLIM (minimal iOS 26 bar) styles with an expanding Apple capsule pill thumb.
  */
 @Composable
 fun EchoPlayerSeekBar(
@@ -330,16 +394,16 @@ fun EchoPlayerSeekBar(
         label = "waveAmp"
     )
 
-    val thumbRadiusFactor by animateFloatAsState(
-        targetValue = if (isDragging) 1.35f else 1.0f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+    val thumbMorph by animateFloatAsState(
+        targetValue = if (isDragging) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.68f, stiffness = 580f),
         label = "thumbScale"
     )
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(34.dp)
+            .height(38.dp)
             .onSizeChanged { widthPx = it.width.coerceAtLeast(1).toFloat() }
             .pointerInput(onSeekProgress) {
                 detectTapGestures { offset ->
@@ -372,12 +436,13 @@ fun EchoPlayerSeekBar(
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(24.dp)
+                .height(28.dp)
         ) {
             val centerY = size.height / 2f
             val totalW = size.width
             val activeX = totalW * displayProgress
-            val trackStroke = if (sliderStyle == PlayerSliderStyle.SLIM) 3.dp.toPx() else 4.dp.toPx()
+            val trackStroke = (if (sliderStyle == PlayerSliderStyle.SLIM) 3.5.dp.toPx() else 4.5.dp.toPx()) +
+                (1.5.dp.toPx() * thumbMorph)
 
             // Inactive track
             drawLine(
@@ -417,17 +482,25 @@ fun EchoPlayerSeekBar(
                 }
             }
 
-            // Glowing Liquid Glass pill thumb
-            val thumbR = (if (sliderStyle == PlayerSliderStyle.SLIM) 5.5.dp.toPx() else 7.dp.toPx()) * thumbRadiusFactor
-            drawCircle(
-                color = activeColor.copy(alpha = 0.32f),
-                radius = thumbR * 1.85f,
-                center = Offset(activeX, centerY)
+            // Apple iOS 26 elongated capsule pill thumb (morphs into translucent crystal glass while scrubbing!)
+            val pillW = (18.dp.toPx() + 10.dp.toPx() * thumbMorph)
+            val pillH = (12.dp.toPx() + 6.dp.toPx() * thumbMorph)
+            val pillX = (activeX - pillW / 2f).coerceIn(0f, (totalW - pillW).coerceAtLeast(0f))
+            val pillY = centerY - pillH / 2f
+            val corner = CornerRadius(pillH / 2f, pillH / 2f)
+
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.96f - 0.72f * thumbMorph),
+                topLeft = Offset(pillX, pillY),
+                size = Size(pillW, pillH),
+                cornerRadius = corner
             )
-            drawCircle(
-                color = FrostWhite,
-                radius = thumbR,
-                center = Offset(activeX, centerY)
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.45f + 0.45f * thumbMorph),
+                topLeft = Offset(pillX, pillY),
+                size = Size(pillW, pillH),
+                cornerRadius = corner,
+                style = Stroke(width = 1.2.dp.toPx())
             )
         }
     }

@@ -57,8 +57,10 @@ import com.example.core.LiquidAppContainer
 import com.example.core.configureAppCheck
 import com.example.domain.model.MainTab
 import com.example.domain.model.Track
+import androidx.compose.ui.zIndex
 import com.example.ui.glass.LiquidAuroraCanvas
 import com.example.ui.glass.LiquidGlassBottomTabBar
+import com.example.ui.glass.LiquidGlassSurface
 import com.example.ui.glass.LocalLiquidBackdrop
 import com.example.ui.glass.MiniPlayerSpringSpecs
 import com.example.ui.screens.AddToPlaylistSheet
@@ -260,7 +262,7 @@ private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
             val mainBackdrop = rememberLayerBackdrop()
             val auroraBackdrop = rememberLayerBackdrop()
             val hasActiveTrack = playerState.currentTrack != null
-            val contentBottomPadding = if (hasActiveTrack) 186.dp else 112.dp
+            val contentBottomPadding = if (hasActiveTrack) 192.dp else 118.dp
 
             Box(modifier = Modifier.fillMaxSize()) {
                 // Scene Layer captured into mainBackdrop so floating chrome, dock & mini-player refract real scrolling content!
@@ -531,45 +533,46 @@ private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
                     }
                 }
 
-                // Floating Status Toast Pill (e.g., Radio started, Settings updated, Batch downloaded)
-                AnimatedVisibility(
-                    visible = !activeToastMessage.isNullOrBlank(),
-                    enter = fadeIn(tween(180)) + slideInVertically(initialOffsetY = { -it }),
-                    exit = fadeOut(tween(180)) + slideOutVertically(targetOffsetY = { -it }),
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .statusBarsPadding()
-                        .padding(top = 12.dp, start = 24.dp, end = 24.dp)
-                ) {
-                    val palette = LocalLiquidPalette.current
-                    Box(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(Color(0xDD0C1226))
-                            .border(1.dp, palette.primaryGlow.copy(alpha = 0.5f), CircleShape)
-                            .clickable {
-                                playerViewModel.clearStatusToast()
-                                soundLabViewModel.clearActionNotice()
-                            }
-                            .padding(horizontal = 16.dp, vertical = 9.dp)
-                    ) {
-                        Text(
-                            text = activeToastMessage.orEmpty(),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = FrostWhite
-                        )
-                    }
-                }
-
-                // Bottom Floating Liquid Glass Dock sampling live mainBackdrop
+                // Floating Apple iOS 26 Liquid Glass Status Toast Pill + Floating Dock
                 CompositionLocalProvider(
                     LocalLiquidBackdrop provides (if (isBackdropReady) mainBackdrop else null)
                 ) {
+                    AnimatedVisibility(
+                        visible = !activeToastMessage.isNullOrBlank(),
+                        enter = fadeIn(tween(180)) + slideInVertically(initialOffsetY = { -it }),
+                        exit = fadeOut(tween(180)) + slideOutVertically(targetOffsetY = { -it }),
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .statusBarsPadding()
+                            .padding(top = 12.dp, start = 24.dp, end = 24.dp)
+                            .zIndex(4f)
+                    ) {
+                        LiquidGlassSurface(
+                            modifier = Modifier.clickable {
+                                playerViewModel.clearStatusToast()
+                                soundLabViewModel.clearActionNotice()
+                            },
+                            cornerRadius = 24.dp,
+                            surfaceAlpha = 0.34f,
+                            blurOverrideDp = 8f
+                        ) {
+                            Text(
+                                text = activeToastMessage.orEmpty(),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = FrostWhite,
+                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
+                            )
+                        }
+                    }
+
                     Column(
-                        modifier = Modifier.align(Alignment.BottomCenter)
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .zIndex(3f)
                     ) {
                         AnimatedVisibility(
                             visible = hasActiveTrack,
+                            modifier = Modifier.zIndex(1f),
                             enter = slideInVertically(
                                 initialOffsetY = { (it * 0.65f).toInt() },
                                 animationSpec = MiniPlayerSpringSpecs.PillEntranceOffset
@@ -597,7 +600,7 @@ private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
                                         onSkipPrevious = playerViewModel::skipPrevious,
                                         onToggleLike = { playerViewModel.toggleLike(activeTrack) }
                                     )
-                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Spacer(modifier = Modifier.height(10.dp))
                                 }
                             }
                         }
@@ -607,7 +610,8 @@ private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
                             onTabSelected = {
                                 if (isDetailOverlayOpen) discoveryViewModel.closeDetailOverlay()
                                 selectedTab = it
-                            }
+                            },
+                            modifier = Modifier.zIndex(2f)
                         )
                     }
                 }

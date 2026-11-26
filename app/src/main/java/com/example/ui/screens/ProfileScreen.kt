@@ -1990,11 +1990,12 @@ private fun GlassTuningStudioCard(
                         }
                         .testTag("glass_studio_preview_pill"),
                     cornerRadius = 30.dp,
-                    tintColor = Color(0xFF0A0E1B),
-                    surfaceAlpha = 0.24f,
+                    tintColor = Color.White,
+                    surfaceAlpha = if (isDraggingPreview) 0.06f else 0.14f,
                     useRefractionShell = true,
                     backdropOverride = previewBackdrop,
-                    refractionBoost = 1f + 0.25f * dragMorph
+                    refractionBoost = 1.15f + 0.35f * dragMorph,
+                    blurOverrideDp = if (isDraggingPreview) 0f else (glassConfig.blurRadiusDp * 0.35f)
                 ) {
                     Text(
                         text = if (isDraggingPreview) "Refracting…" else "Drag Liquid Pill",

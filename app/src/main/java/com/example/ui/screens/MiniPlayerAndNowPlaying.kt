@@ -128,6 +128,7 @@ import com.example.ui.components.AnimatedLikeButton
 import com.example.ui.components.EchoPlayerSeekBar
 import com.example.ui.components.EchoSurfaceCard
 import com.example.ui.glass.AnimatedWaveformBars
+import com.example.ui.glass.AppleGlassTokens
 import com.example.ui.glass.LiquidAuroraCanvas
 import com.example.ui.glass.LiquidGlassButton
 import com.example.ui.glass.LiquidGlassSurface
@@ -216,10 +217,11 @@ fun FloatingLiquidMiniPlayer(
                 onSkipPrevious = onSkipPrevious
             ),
         cornerRadius = 33.dp,
-        tintColor = Color(0xFF10131C),
-        surfaceAlpha = 0.58f,
+        tintColor = AppleGlassTokens.NeutralDarkTint,
+        surfaceAlpha = 0.34f,
         highlightAccent = palette.primaryGlow,
-        refractionBoost = 1.15f
+        refractionBoost = 1.15f,
+        blurOverrideDp = 8f
     ) {
         Box(
             modifier = Modifier

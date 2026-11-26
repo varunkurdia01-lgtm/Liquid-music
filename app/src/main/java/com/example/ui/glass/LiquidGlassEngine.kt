@@ -1,6 +1,7 @@
 package com.example.ui.glass
 
 import android.os.Build
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -37,6 +38,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -54,6 +56,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -71,12 +75,16 @@ import com.example.ui.theme.LocalLiquidGlassConfig
 import com.example.ui.theme.LocalLiquidPalette
 import com.example.ui.theme.ObsidianBlack
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.Shadow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.abs
@@ -88,6 +96,20 @@ import kotlin.math.sin
  * buttons, sliders, toggles, and pills.
  */
 val LocalLiquidBackdrop = compositionLocalOf<Backdrop?> { null }
+
+/**
+ * Apple iOS 26 dark-mode optical material palette tokens.
+ */
+object AppleGlassTokens {
+    val NeutralDarkTint = Color(0xFF141822)
+    val ElevatedDarkTint = Color(0xFF1D2230)
+    val AppleSystemGreen = Color(0xFF34C759)
+    val AppleSystemBlue = Color(0xFF0A84FF)
+    val TrackOffCharcoal = Color(0xFF3A3C46)
+    val SpecularRimTop = Color.White.copy(alpha = 0.34f)
+    val SpecularRimMid = Color.White.copy(alpha = 0.07f)
+    val SpecularRimBottom = Color.White.copy(alpha = 0.16f)
+}
 
 /**
  * Animated Crystal Ice & Deep Indigo (or dynamic track Palette) ambient aurora backdrop over pure AMOLED black.
@@ -129,8 +151,8 @@ fun LiquidAuroraCanvas(
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    palette.deepAurora.copy(alpha = 0.62f * intensity),
-                    palette.deepAurora.copy(alpha = 0.20f * intensity),
+                    palette.deepAurora.copy(alpha = 0.64f * intensity),
+                    palette.deepAurora.copy(alpha = 0.22f * intensity),
                     Color.Transparent
                 ),
                 center = c1,
@@ -147,8 +169,8 @@ fun LiquidAuroraCanvas(
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    palette.secondaryGlow.copy(alpha = 0.34f * intensity),
-                    palette.secondaryGlow.copy(alpha = 0.10f * intensity),
+                    palette.secondaryGlow.copy(alpha = 0.36f * intensity),
+                    palette.secondaryGlow.copy(alpha = 0.12f * intensity),
                     Color.Transparent
                 ),
                 center = c2,
@@ -165,8 +187,8 @@ fun LiquidAuroraCanvas(
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    palette.primaryGlow.copy(alpha = 0.26f * intensity),
-                    palette.deepAurora.copy(alpha = 0.12f * intensity),
+                    palette.primaryGlow.copy(alpha = 0.28f * intensity),
+                    palette.deepAurora.copy(alpha = 0.14f * intensity),
                     Color.Transparent
                 ),
                 center = c3,
@@ -179,29 +201,30 @@ fun LiquidAuroraCanvas(
 }
 
 /**
- * Optical Liquid Glass container powered by Kyant0/AndroidLiquidGlass (`io.github.kyant0:backdrop:2.0.0`).
+ * Authentic Apple iOS 26 Optical Liquid Glass container powered by Kyant0/AndroidLiquidGlass
+ * (`io.github.kyant0:backdrop`).
  *
- * When [useRefractionShell] is true and a [LocalLiquidBackdrop] is present (and not in Battery Saver),
- * renders real-time GPU backdrop sampling with vibrancy, frosted blur, curved-edge SDF lens refraction,
- * optional RGB chromatic dispersion, Fresnel Highlight, and ambient Shadow.
+ * Relies on physically-based GPU `vibrancy()`, crisp low-radius `blur()`, curved-edge `lens()`
+ * with `depthEffect = true`, optional chromatic dispersion, and native Fresnel `Highlight.Default`
+ * + ambient `Shadow.Default` — avoiding muddy opaque veils or heavy painted outlines.
  */
 @Composable
 fun LiquidGlassSurface(
     modifier: Modifier = Modifier,
     cornerRadius: Dp = 24.dp,
-    tintColor: Color = Color(0xFF0E1426),
-    surfaceAlpha: Float = 0.42f,
+    tintColor: Color = AppleGlassTokens.NeutralDarkTint,
+    surfaceAlpha: Float = 0.32f,
     highlightAccent: Color? = null,
     useRefractionShell: Boolean = true,
     backdropOverride: Backdrop? = null,
     refractionBoost: Float = 1f,
+    blurOverrideDp: Float? = null,
     content: @Composable BoxScope.() -> Unit
 ) {
     val palette = LocalLiquidPalette.current
     val glassTier = LocalGlassQuality.current
     val glassConfig = LocalLiquidGlassConfig.current
     val backdrop = backdropOverride ?: LocalLiquidBackdrop.current
-    val accent = highlightAccent ?: palette.primaryGlow
     val shape: Shape = RoundedCornerShape(cornerRadius)
 
     val useRealBackdrop = useRefractionShell &&
@@ -212,7 +235,8 @@ fun LiquidGlassSurface(
     if (useRealBackdrop && backdrop != null) {
         val enableLens = glassTier == GlassQualityTier.ULTRA_AGSL &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-        val veilAlpha = (surfaceAlpha * 0.52f).coerceIn(0.14f, 0.48f)
+        val effectiveBlurDp = blurOverrideDp ?: glassConfig.blurRadiusDp
+        val veilAlpha = (surfaceAlpha * 0.68f).coerceIn(0.04f, 0.44f)
 
         Box(
             modifier = modifier
@@ -221,13 +245,14 @@ fun LiquidGlassSurface(
                     shape = { shape },
                     effects = {
                         vibrancy()
-                        if (glassConfig.blurRadiusDp > 0.5f) {
-                            blur(glassConfig.blurRadiusDp.dp.toPx())
+                        if (effectiveBlurDp > 0.35f) {
+                            blur(effectiveBlurDp.dp.toPx())
                         }
                         if (enableLens) {
                             lens(
                                 refractionHeight = (glassConfig.refractionHeightDp * refractionBoost).dp.toPx(),
                                 refractionAmount = (glassConfig.refractionAmountDp * refractionBoost).dp.toPx(),
+                                depthEffect = true,
                                 chromaticAberration = glassConfig.chromaticAberration
                             )
                         }
@@ -235,41 +260,34 @@ fun LiquidGlassSurface(
                     highlight = { Highlight.Default },
                     shadow = { Shadow.Default },
                     onDrawSurface = {
-                        drawRect(tintColor.copy(alpha = veilAlpha))
+                        if (veilAlpha > 0.01f) {
+                            drawRect(tintColor.copy(alpha = veilAlpha))
+                        }
+                        // Whisper-soft top optical sheen matching Apple iOS 26 curved glass
                         drawRect(
                             brush = Brush.verticalGradient(
                                 colors = listOf(
-                                    accent.copy(alpha = 0.14f),
-                                    Color.Transparent
+                                    Color.White.copy(alpha = 0.08f),
+                                    Color.Transparent,
+                                    Color.White.copy(alpha = 0.02f)
                                 )
                             )
                         )
                     }
-                )
-                .border(
-                    width = 0.85.dp,
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.42f),
-                            accent.copy(alpha = 0.24f),
-                            Color.White.copy(alpha = 0.08f)
-                        )
-                    ),
-                    shape = shape
                 ),
             content = content
         )
     } else {
-        // Lightweight smoked obsidian glass for dense scrolling lists & Battery Saver tier
+        // Lightweight Apple iOS 26 dark frosted material for high-frequency scrolling lists & Battery Saver
+        val subtleAccent = highlightAccent ?: Color.White
         Box(
             modifier = modifier
                 .clip(shape)
                 .background(
-                    brush = Brush.linearGradient(
+                    brush = Brush.verticalGradient(
                         colors = listOf(
-                            tintColor.copy(alpha = (surfaceAlpha + 0.14f).coerceAtMost(0.86f)),
-                            palette.deepAurora.copy(alpha = 0.20f),
-                            tintColor.copy(alpha = surfaceAlpha.coerceAtMost(0.76f))
+                            tintColor.copy(alpha = (surfaceAlpha + 0.38f).coerceIn(0.58f, 0.84f)),
+                            tintColor.copy(alpha = (surfaceAlpha + 0.30f).coerceIn(0.50f, 0.78f))
                         )
                     )
                 )
@@ -279,23 +297,23 @@ fun LiquidGlassSurface(
                     drawRoundRect(
                         brush = Brush.verticalGradient(
                             colors = listOf(
-                                accent.copy(alpha = 0.13f),
+                                Color.White.copy(alpha = 0.07f),
                                 Color.Transparent
                             ),
                             startY = 0f,
-                            endY = size.height * 0.42f
+                            endY = size.height * 0.38f
                         ),
                         cornerRadius = CornerRadius(rPx, rPx)
                     )
                 }
                 .border(
-                    width = 1.dp,
+                    width = 0.65.dp,
                     brush = Brush.linearGradient(
                         colors = listOf(
-                            accent.copy(alpha = 0.40f),
-                            Color.White.copy(alpha = 0.14f),
-                            palette.secondaryGlow.copy(alpha = 0.24f),
-                            Color.White.copy(alpha = 0.08f)
+                            Color.White.copy(alpha = 0.28f),
+                            subtleAccent.copy(alpha = 0.12f),
+                            Color.White.copy(alpha = 0.06f),
+                            Color.White.copy(alpha = 0.16f)
                         )
                     ),
                     shape = shape
@@ -306,15 +324,20 @@ fun LiquidGlassSurface(
 }
 
 /**
- * AndroidLiquidGlass-style interactive Liquid Button with live backdrop refraction,
- * pointer-following radial caustic InteractiveHighlight, and spring physics driven by LiquidGlassConfig.
+ * Apple iOS 26 Liquid Glass Button supporting both:
+ * - **Surface Liquid Button** (`accentGlow = false`, `tintColor = null`): crystal-clear / frosted optical glass pill
+ * - **Tinted Liquid Button** (`accentGlow = true` or explicit `tintColor`): translucent vibrant tinted Apple glass
+ *
+ * Features real-time backdrop refraction, native Fresnel `Highlight.Default`, pointer-tracking radial
+ * specular InteractiveHighlight bloom, and responsive high-stiffness spring compression.
  */
 @Composable
 fun LiquidGlassButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    cornerRadius: Dp = 20.dp,
+    cornerRadius: Dp = 24.dp,
     accentGlow: Boolean = false,
+    tintColor: Color? = null,
     enabled: Boolean = true,
     useLiveBackdrop: Boolean = true,
     content: @Composable BoxScope.() -> Unit
@@ -322,6 +345,8 @@ fun LiquidGlassButton(
     val haptic = LocalHapticFeedback.current
     val palette = LocalLiquidPalette.current
     val glassConfig = LocalLiquidGlassConfig.current
+    val glassTier = LocalGlassQuality.current
+    val backdrop = LocalLiquidBackdrop.current
 
     var isPressed by remember { mutableStateOf(false) }
     var touchOffset by remember { mutableStateOf(Offset.Unspecified) }
@@ -330,87 +355,228 @@ fun LiquidGlassButton(
     val pressScale by animateFloatAsState(
         targetValue = if (isPressed && enabled) 0.945f else 1f,
         animationSpec = spring(
-            dampingRatio = glassConfig.springDamping,
-            stiffness = glassConfig.springStiffness * 1.25f
+            dampingRatio = (glassConfig.springDamping + 0.04f).coerceIn(0.55f, 0.85f),
+            stiffness = (glassConfig.springStiffness * 1.35f).coerceAtLeast(520f)
         ),
         label = "liquidButtonScale"
     )
     val highlightAlpha by animateFloatAsState(
         targetValue = if (isPressed && enabled) 1f else 0f,
-        animationSpec = tween(durationMillis = 180),
+        animationSpec = tween(durationMillis = 160),
         label = "interactiveHighlightAlpha"
     )
 
-    LiquidGlassSurface(
-        modifier = modifier
-            .onSizeChanged { buttonSize = it }
-            .graphicsLayer {
-                scaleX = pressScale
-                scaleY = pressScale
-                alpha = if (enabled) 1f else 0.45f
-            }
-            .pointerInput(enabled, onClick) {
-                if (!enabled) return@pointerInput
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    isPressed = true
-                    touchOffset = down.position
-                    var cancelled = false
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull() ?: break
-                        touchOffset = change.position
-                        if (!change.pressed) {
-                            break
-                        }
-                        val outOfBounds = change.position.x < -24f ||
-                            change.position.y < -24f ||
-                            change.position.x > size.width + 24f ||
-                            change.position.y > size.height + 24f
-                        if (outOfBounds) {
-                            cancelled = true
-                        }
-                    }
-                    isPressed = false
-                    if (!cancelled) {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onClick()
-                    }
+    val shape = RoundedCornerShape(cornerRadius)
+    val resolvedTint = tintColor ?: if (accentGlow) palette.primaryGlow else null
+    val isTinted = resolvedTint != null
+
+    val useRealBackdrop = useLiveBackdrop &&
+        backdrop != null &&
+        glassTier != GlassQualityTier.BATTERY_SAVER &&
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+
+    val gestureModifier = modifier
+        .onSizeChanged { buttonSize = it }
+        .pointerInput(enabled, onClick) {
+            if (!enabled) return@pointerInput
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                isPressed = true
+                touchOffset = down.position
+                var cancelled = false
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull() ?: break
+                    touchOffset = change.position
+                    if (!change.pressed) break
+                    val outOfBounds = change.position.x < -24f ||
+                        change.position.y < -24f ||
+                        change.position.x > size.width + 24f ||
+                        change.position.y > size.height + 24f
+                    if (outOfBounds) cancelled = true
                 }
-            },
-        cornerRadius = cornerRadius,
-        tintColor = if (accentGlow) palette.deepAurora else Color(0xFF131A2F),
-        surfaceAlpha = if (accentGlow) 0.56f else 0.42f,
-        highlightAccent = if (accentGlow) palette.primaryGlow else Color.White,
-        useRefractionShell = useLiveBackdrop,
-        refractionBoost = if (isPressed) 1.18f else 0.85f
-    ) {
-        // Pointer-following InteractiveHighlight radial specular shine
-        if (highlightAlpha > 0.01f && touchOffset != Offset.Unspecified && buttonSize.width > 0) {
-            Canvas(modifier = Modifier.matchParentSize()) {
-                val radius = maxOf(size.width, size.height) * 0.72f
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.32f * highlightAlpha),
-                            palette.primaryGlow.copy(alpha = 0.16f * highlightAlpha),
-                            Color.Transparent
-                        ),
-                        center = touchOffset,
-                        radius = radius
-                    ),
-                    radius = radius,
-                    center = touchOffset
-                )
+                isPressed = false
+                if (!cancelled) {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onClick()
+                }
             }
         }
-        content()
+
+    if (useRealBackdrop && backdrop != null) {
+        val enableLens = glassTier == GlassQualityTier.ULTRA_AGSL &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+
+        Box(
+            modifier = gestureModifier
+                .drawBackdrop(
+                    backdrop = backdrop,
+                    shape = { shape },
+                    layerBlock = {
+                        scaleX = pressScale
+                        scaleY = pressScale
+                        alpha = if (enabled) 1f else 0.45f
+                    },
+                    effects = {
+                        vibrancy()
+                        blur(4.dp.toPx())
+                        if (enableLens) {
+                            lens(
+                                refractionHeight = (glassConfig.refractionHeightDp * (if (isPressed) 0.95f else 0.72f)).dp.toPx(),
+                                refractionAmount = (glassConfig.refractionAmountDp * (if (isPressed) 1.05f else 0.78f)).dp.toPx(),
+                                depthEffect = true,
+                                chromaticAberration = glassConfig.chromaticAberration && isPressed
+                            )
+                        }
+                    },
+                    highlight = { Highlight.Default },
+                    shadow = { Shadow.Default },
+                    onDrawSurface = {
+                        if (isTinted && resolvedTint != null) {
+                            // Translucent Apple Tinted Liquid Button (like iOS 26 blue/orange pills)
+                            drawRect(resolvedTint.copy(alpha = 0.56f))
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color.White.copy(alpha = 0.22f),
+                                        Color.Transparent,
+                                        Color.Black.copy(alpha = 0.10f)
+                                    )
+                                )
+                            )
+                        } else {
+                            // Clear Surface Liquid Button
+                            drawRect(Color.White.copy(alpha = 0.11f + 0.06f * highlightAlpha))
+                            drawRect(AppleGlassTokens.NeutralDarkTint.copy(alpha = 0.24f))
+                        }
+                    }
+                )
+        ) {
+            InteractiveSpecularBloom(
+                highlightAlpha = highlightAlpha,
+                touchOffset = touchOffset,
+                buttonSize = buttonSize
+            )
+            content()
+        }
+    } else {
+        Box(
+            modifier = gestureModifier
+                .graphicsLayer {
+                    scaleX = pressScale
+                    scaleY = pressScale
+                    alpha = if (enabled) 1f else 0.45f
+                }
+                .clip(shape)
+                .background(
+                    if (isTinted && resolvedTint != null) {
+                        Brush.verticalGradient(
+                            listOf(
+                                resolvedTint.copy(alpha = 0.74f),
+                                resolvedTint.copy(alpha = 0.54f)
+                            )
+                        )
+                    } else {
+                        Brush.verticalGradient(
+                            listOf(
+                                Color.White.copy(alpha = 0.15f),
+                                AppleGlassTokens.NeutralDarkTint.copy(alpha = 0.76f)
+                            )
+                        )
+                    }
+                )
+                .border(
+                    width = 0.7.dp,
+                    brush = Brush.linearGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = if (isTinted) 0.48f else 0.30f),
+                            Color.White.copy(alpha = 0.08f),
+                            Color.White.copy(alpha = 0.20f)
+                        )
+                    ),
+                    shape = shape
+                )
+        ) {
+            InteractiveSpecularBloom(
+                highlightAlpha = highlightAlpha,
+                touchOffset = touchOffset,
+                buttonSize = buttonSize
+            )
+            content()
+        }
+    }
+}
+
+@Composable
+private fun BoxScope.InteractiveSpecularBloom(
+    highlightAlpha: Float,
+    touchOffset: Offset,
+    buttonSize: IntSize
+) {
+    if (highlightAlpha > 0.01f && touchOffset != Offset.Unspecified && buttonSize.width > 0) {
+        Canvas(modifier = Modifier.matchParentSize()) {
+            val radius = maxOf(size.width, size.height) * 0.72f
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.34f * highlightAlpha),
+                        Color.White.copy(alpha = 0.12f * highlightAlpha),
+                        Color.Transparent
+                    ),
+                    center = touchOffset,
+                    radius = radius
+                ),
+                radius = radius,
+                center = touchOffset
+            )
+        }
     }
 }
 
 /**
- * AndroidLiquidGlass-style interactive Liquid Slider with a refracting crystal droplet thumb
- * that enlarges and intensifies optical lens edge refraction during drag.
+ * Apple iOS 26 Circular Control Center / Toolbar Liquid Glass Icon Button.
+ * Supports clear optical glass or vibrant tinted glass with spring bounce and Fresnel rim.
+ */
+@Composable
+fun LiquidGlassIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: Dp = 44.dp,
+    iconSize: Dp = 20.dp,
+    iconTint: Color = FrostWhite,
+    tinted: Boolean = false,
+    tintColor: Color? = null,
+    useLiveBackdrop: Boolean = true
+) {
+    LiquidGlassButton(
+        onClick = onClick,
+        modifier = modifier.size(size),
+        cornerRadius = size / 2f,
+        accentGlow = tinted,
+        tintColor = tintColor,
+        useLiveBackdrop = useLiveBackdrop
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = iconTint,
+            modifier = Modifier
+                .size(iconSize)
+                .align(Alignment.Center)
+        )
+    }
+}
+
+/**
+ * Authentic Apple iOS 26 / Kyant0 Liquid Glass Slider.
+ *
+ * - Captures the clean track rail into a local `rememberLayerBackdrop()`.
+ * - At rest: sleek elongated pure-white iOS 26 capsule pill thumb with subtle drop shadow.
+ * - While pressed/dragged: the thumb expands past the track (`1.32x`, unclipped!) and morphs into
+ *   a **crystal-clear refracting optical glass lens** sampling both the scene backdrop and track
+ *   so the glowing active slider bar visibly bends & magnifies right through the glass pill.
  */
 @Composable
 fun LiquidGlassSlider(
@@ -419,14 +585,20 @@ fun LiquidGlassSlider(
     modifier: Modifier = Modifier,
     valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
     onValueChangeFinished: (() -> Unit)? = null,
-    activeColor: Color = LocalLiquidPalette.current.primaryGlow
+    activeColor: Color = AppleGlassTokens.AppleSystemBlue
 ) {
-    val palette = LocalLiquidPalette.current
     val glassConfig = LocalLiquidGlassConfig.current
     val glassTier = LocalGlassQuality.current
-    val backdrop = LocalLiquidBackdrop.current
+    val sceneBackdrop = LocalLiquidBackdrop.current
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
+
+    val trackBackdrop = rememberLayerBackdrop()
+    val combinedThumbBackdrop = if (sceneBackdrop != null) {
+        rememberCombinedBackdrop(sceneBackdrop, trackBackdrop)
+    } else {
+        trackBackdrop
+    }
 
     var trackWidthPx by remember { mutableFloatStateOf(0f) }
     var isDragging by remember { mutableStateOf(false) }
@@ -437,14 +609,14 @@ fun LiquidGlassSlider(
     val thumbMorph by animateFloatAsState(
         targetValue = if (isDragging) 1f else 0f,
         animationSpec = spring(
-            dampingRatio = glassConfig.springDamping,
-            stiffness = glassConfig.springStiffness
+            dampingRatio = (glassConfig.springDamping + 0.04f).coerceIn(0.58f, 0.85f),
+            stiffness = (glassConfig.springStiffness * 1.15f).coerceAtLeast(480f)
         ),
         label = "sliderThumbMorph"
     )
 
-    val thumbWidthDp = (32f * glassConfig.pillScale).dp
-    val thumbHeightDp = (22f * glassConfig.pillScale).dp
+    val thumbWidthDp = (38f * glassConfig.pillScale).coerceIn(32f, 44f).dp
+    val thumbHeightDp = (22f * glassConfig.pillScale).coerceIn(19f, 26f).dp
     val thumbWidthPx = with(density) { thumbWidthDp.toPx() }
 
     fun updateFromX(x: Float) {
@@ -456,7 +628,7 @@ fun LiquidGlassSlider(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(38.dp)
+            .height(42.dp)
             .onSizeChanged { trackWidthPx = it.width.toFloat() }
             .pointerInput(valueRange) {
                 detectTapGestures { offset ->
@@ -488,90 +660,101 @@ fun LiquidGlassSlider(
             },
         contentAlignment = Alignment.CenterStart
     ) {
-        // Track rail
+        // LAYER 1: Track Rail captured into trackBackdrop so the crystal thumb refracts the bar underneath
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height((7f + 2f * thumbMorph).dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.14f))
-                .border(0.75.dp, Color.White.copy(alpha = 0.16f), CircleShape)
+                .height(24.dp)
+                .layerBackdrop(trackBackdrop),
+            contentAlignment = Alignment.CenterStart
         ) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth(fraction.coerceAtLeast(0.01f))
-                    .height((7f + 2f * thumbMorph).dp)
+                    .fillMaxWidth()
+                    .height((6f + 1.5f * thumbMorph).dp)
                     .clip(CircleShape)
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(palette.deepAurora, palette.secondaryGlow, activeColor)
-                        )
-                    )
-            )
+                    .background(Color.White.copy(alpha = 0.20f))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(fraction.coerceAtLeast(0.008f))
+                        .height((6f + 1.5f * thumbMorph).dp)
+                        .clip(CircleShape)
+                        .background(activeColor)
+                )
+            }
         }
 
-        // Refracting Liquid Glass Droplet Thumb
+        // LAYER 2 (ON TOP, UNCLIPPED): Apple iOS 26 White Pill -> Crystal-Clear Magnifying Glass Droplet
         val usablePx = (trackWidthPx - thumbWidthPx).coerceAtLeast(0f)
         val thumbOffsetX = usablePx * fraction
-        val useLiveLens = backdrop != null &&
-            glassTier == GlassQualityTier.ULTRA_AGSL &&
+        val useLiveLens = glassTier != GlassQualityTier.BATTERY_SAVER &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
 
-        val thumbModifier = Modifier
-            .graphicsLayer {
-                translationX = thumbOffsetX
-                scaleX = 1f + 0.24f * thumbMorph
-                scaleY = 1f + 0.28f * thumbMorph
-            }
-            .width(thumbWidthDp)
-            .height(thumbHeightDp)
-
-        if (useLiveLens && backdrop != null) {
+        if (useLiveLens) {
             Box(
-                modifier = thumbModifier
+                modifier = Modifier
+                    .width(thumbWidthDp)
+                    .height(thumbHeightDp)
                     .drawBackdrop(
-                        backdrop = backdrop,
+                        backdrop = combinedThumbBackdrop,
                         shape = { CircleShape },
+                        layerBlock = {
+                            translationX = thumbOffsetX
+                            scaleX = 1f + 0.30f * thumbMorph
+                            scaleY = 1f + 0.34f * thumbMorph
+                        },
                         effects = {
                             vibrancy()
-                            blur((glassConfig.blurRadiusDp * 0.25f).dp.toPx())
-                            lens(
-                                refractionHeight = (glassConfig.refractionHeightDp * (0.7f + 0.45f * thumbMorph)).dp.toPx(),
-                                refractionAmount = (glassConfig.refractionAmountDp * (0.85f + 0.55f * thumbMorph)).dp.toPx(),
-                                chromaticAberration = glassConfig.chromaticAberration
-                            )
+                            if (thumbMorph > 0.02f) {
+                                lens(
+                                    refractionHeight = (10f * thumbMorph).dp.toPx(),
+                                    refractionAmount = (26f * thumbMorph).dp.toPx(),
+                                    depthEffect = true,
+                                    chromaticAberration = glassConfig.chromaticAberration
+                                )
+                            }
                         },
                         highlight = { Highlight.Default },
                         shadow = { Shadow.Default },
                         onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = 0.22f - 0.10f * thumbMorph))
+                            // Opaque crisp white pill at rest -> 100% crystal-clear optical glass while scrubbing
+                            val whiteAlpha = (0.98f - 0.93f * thumbMorph).coerceIn(0.05f, 0.98f)
+                            drawRect(Color.White.copy(alpha = whiteAlpha))
                         }
-                    )
-                    .border(
-                        width = 1.1.dp,
-                        brush = Brush.linearGradient(
-                            listOf(Color.White.copy(alpha = 0.90f), palette.primaryGlow.copy(alpha = 0.55f))
-                        ),
-                        shape = CircleShape
                     )
             )
         } else {
             Box(
-                modifier = thumbModifier
+                modifier = Modifier
+                    .graphicsLayer {
+                        translationX = thumbOffsetX
+                        scaleX = 1f + 0.24f * thumbMorph
+                        scaleY = 1f + 0.26f * thumbMorph
+                    }
+                    .width(thumbWidthDp)
+                    .height(thumbHeightDp)
                     .clip(CircleShape)
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(Color.White.copy(alpha = 0.90f), palette.primaryGlow.copy(alpha = 0.72f))
-                        )
+                    .background(Color.White.copy(alpha = (0.96f - 0.68f * thumbMorph).coerceIn(0.28f, 0.96f)))
+                    .border(
+                        width = 1.dp,
+                        color = Color.White.copy(alpha = 0.85f),
+                        shape = CircleShape
                     )
-                    .border(1.dp, Color.White, CircleShape)
             )
         }
     }
 }
 
 /**
- * AndroidLiquidGlass-style fluid Liquid Toggle pill with velocity-stretched refracting glass knob.
+ * Authentic Apple iOS 26 / Kyant0 Liquid Glass Toggle Switch.
+ *
+ * - Captures the smooth Apple green / charcoal pill track via `rememberLayerBackdrop()`.
+ * - Supports both tap AND horizontal drag scrubbing.
+ * - At rest: crisp pure-white iOS 26 capsule thumb.
+ * - While pressed, dragged, or snapping across: expands beyond the track height (`1.28x`, unclipped!)
+ *   and turns into a **crystal-clear magnifying liquid glass lens** that visibly refracts & bends the
+ *   vibrant green track directly through the glass capsule with subtle chromatic prism edges.
  */
 @Composable
 fun LiquidGlassToggle(
@@ -579,100 +762,187 @@ fun LiquidGlassToggle(
     onCheckedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val palette = LocalLiquidPalette.current
     val glassConfig = LocalLiquidGlassConfig.current
     val glassTier = LocalGlassQuality.current
-    val backdrop = LocalLiquidBackdrop.current
+    val sceneBackdrop = LocalLiquidBackdrop.current
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
-    val trackWidth = (60f * glassConfig.pillScale).dp
-    val trackHeight = (34f * glassConfig.pillScale).dp
-    val knobWidth = (30f * glassConfig.pillScale).dp
-    val knobHeight = (26f * glassConfig.pillScale).dp
-    val travelPx = with(density) { (trackWidth - knobWidth - 8.dp).toPx().coerceAtLeast(1f) }
-
-    val progress = remember { Animatable(if (checked) 1f else 0f) }
-
-    androidx.compose.runtime.LaunchedEffect(checked, glassConfig.springStiffness, glassConfig.springDamping) {
-        progress.animateTo(
-            targetValue = if (checked) 1f else 0f,
-            animationSpec = spring(
-                dampingRatio = glassConfig.springDamping,
-                stiffness = glassConfig.springStiffness
-            )
-        )
+    val trackBackdrop = rememberLayerBackdrop()
+    val combinedTrackBackdrop = if (sceneBackdrop != null) {
+        rememberCombinedBackdrop(sceneBackdrop, trackBackdrop)
+    } else {
+        trackBackdrop
     }
 
-    val motionStretch = (abs(progress.velocity) / 14f).coerceIn(0f, 0.22f)
-    val useLiveLens = backdrop != null &&
-        glassTier == GlassQualityTier.ULTRA_AGSL &&
+    val trackWidth = (62f * glassConfig.pillScale).coerceIn(56f, 70f).dp
+    val trackHeight = (32f * glassConfig.pillScale).coerceIn(28f, 36f).dp
+    val knobWidth = (35f * glassConfig.pillScale).coerceIn(31f, 40f).dp
+    val knobHeight = (24f * glassConfig.pillScale).coerceIn(21f, 28f).dp
+    val insetPadding = 4.dp
+    val travelPx = with(density) { (trackWidth - knobWidth - insetPadding * 2).toPx().coerceAtLeast(1f) }
+
+    val progress = remember { Animatable(if (checked) 1f else 0f) }
+    var isPressed by remember { mutableStateOf(false) }
+    var isMotionPopped by remember { mutableStateOf(false) }
+
+    LaunchedEffect(checked, glassConfig.springStiffness, glassConfig.springDamping) {
+        if (!isPressed) {
+            val target = if (checked) 1f else 0f
+            if (abs(progress.value - target) > 0.02f) {
+                isMotionPopped = true
+                launch {
+                    delay(210L)
+                    isMotionPopped = false
+                }
+            }
+            progress.animateTo(
+                targetValue = target,
+                animationSpec = spring(
+                    dampingRatio = (glassConfig.springDamping + 0.04f).coerceIn(0.58f, 0.84f),
+                    stiffness = (glassConfig.springStiffness * 1.15f).coerceAtLeast(480f)
+                )
+            )
+        }
+    }
+
+    val glassMorph by animateFloatAsState(
+        targetValue = if (isPressed || isMotionPopped) 1f else 0f,
+        animationSpec = spring(
+            dampingRatio = 0.72f,
+            stiffness = 620f
+        ),
+        label = "toggleGlassMorph"
+    )
+
+    val motionStretch = (abs(progress.velocity) / 14f).coerceIn(0f, 0.16f)
+    val trackColor = lerp(
+        start = AppleGlassTokens.TrackOffCharcoal.copy(alpha = 0.76f),
+        stop = AppleGlassTokens.AppleSystemGreen,
+        fraction = progress.value.coerceIn(0f, 1f)
+    )
+    val useLiveLens = glassTier != GlassQualityTier.BATTERY_SAVER &&
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
 
+    // Outer unclipped container gives generous vertical room so the expanded droplet never clips
     Box(
         modifier = modifier
-            .width(trackWidth)
-            .height(trackHeight)
-            .clip(CircleShape)
-            .background(
-                if (progress.value > 0.5f) {
-                    Brush.horizontalGradient(listOf(palette.deepAurora, palette.secondaryGlow))
-                } else {
-                    Brush.horizontalGradient(listOf(Color(0x66161C2E), Color(0x4D111624)))
-                }
-            )
-            .border(
-                width = 1.dp,
-                color = if (checked) palette.primaryGlow.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.2f),
-                shape = CircleShape
-            )
-            .clickable {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                scope.launch { onCheckedChange(!checked) }
-            }
-            .padding(horizontal = 4.dp),
-        contentAlignment = Alignment.CenterStart
-    ) {
-        val knobModifier = Modifier
-            .graphicsLayer {
-                translationX = travelPx * progress.value
-                scaleX = 1f + motionStretch
-                scaleY = 1f - motionStretch * 0.35f
-            }
-            .width(knobWidth)
-            .height(knobHeight)
+            .width(trackWidth + 8.dp)
+            .height(trackHeight + 12.dp)
+            .pointerInput(checked, travelPx, glassConfig.springStiffness, glassConfig.springDamping) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    isPressed = true
+                    var dragged = false
+                    val startX = down.position.x
+                    val startProgress = progress.value
 
-        if (useLiveLens && backdrop != null) {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: break
+                        if (!change.pressed) {
+                            isPressed = false
+                            val nextChecked = if (dragged) progress.value >= 0.5f else !checked
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            if (nextChecked != checked) {
+                                onCheckedChange(nextChecked)
+                            } else {
+                                scope.launch {
+                                    progress.animateTo(
+                                        targetValue = if (checked) 1f else 0f,
+                                        animationSpec = spring(
+                                            dampingRatio = (glassConfig.springDamping + 0.04f).coerceIn(0.58f, 0.84f),
+                                            stiffness = (glassConfig.springStiffness * 1.15f).coerceAtLeast(480f)
+                                        )
+                                    )
+                                }
+                            }
+                            break
+                        }
+
+                        val dx = change.position.x - startX
+                        if (abs(dx) > 6f) {
+                            dragged = true
+                            change.consume()
+                            val nextVal = (startProgress + dx / travelPx).coerceIn(0f, 1f)
+                            scope.launch { progress.snapTo(nextVal) }
+                        }
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        // LAYER 1: Track captured into trackBackdrop
+        Box(
+            modifier = Modifier
+                .width(trackWidth)
+                .height(trackHeight)
+                .layerBackdrop(trackBackdrop)
+                .clip(CircleShape)
+                .background(trackColor)
+        )
+
+        // LAYER 2 (ON TOP, UNCLIPPED): White Apple Pill -> Crystal-Clear Refracting Droplet Lens
+        val startOffsetPx = with(density) { (insetPadding + 4.dp).toPx() }
+        val knobX = startOffsetPx + travelPx * progress.value
+
+        if (useLiveLens) {
             Box(
-                modifier = knobModifier
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .width(knobWidth)
+                    .height(knobHeight)
                     .drawBackdrop(
-                        backdrop = backdrop,
+                        backdrop = combinedTrackBackdrop,
                         shape = { CircleShape },
+                        layerBlock = {
+                            translationX = knobX
+                            scaleX = 1f + 0.28f * glassMorph + motionStretch
+                            scaleY = 1f + 0.30f * glassMorph - motionStretch * 0.22f
+                        },
                         effects = {
                             vibrancy()
-                            lens(
-                                refractionHeight = (glassConfig.refractionHeightDp * 0.65f).dp.toPx(),
-                                refractionAmount = (glassConfig.refractionAmountDp * 0.85f).dp.toPx(),
-                                chromaticAberration = glassConfig.chromaticAberration
-                            )
+                            if (glassMorph > 0.02f) {
+                                lens(
+                                    refractionHeight = (10f * glassMorph).dp.toPx(),
+                                    refractionAmount = (24f * glassMorph).dp.toPx(),
+                                    depthEffect = true,
+                                    chromaticAberration = glassConfig.chromaticAberration
+                                )
+                            }
                         },
                         highlight = { Highlight.Default },
                         shadow = { Shadow.Default },
-                        onDrawSurface = { drawRect(Color.White.copy(alpha = 0.35f)) }
+                        onDrawSurface = {
+                            // Pure white at rest -> crystal-clear refracting droplet while active!
+                            val whiteAlpha = (0.98f - 0.93f * glassMorph).coerceIn(0.05f, 0.98f)
+                            drawRect(Color.White.copy(alpha = whiteAlpha))
+                        }
                     )
-                    .border(1.dp, Color.White.copy(alpha = 0.88f), CircleShape)
             )
         } else {
             Box(
-                modifier = knobModifier
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .graphicsLayer {
+                        translationX = knobX
+                        scaleX = 1f + 0.20f * glassMorph + motionStretch
+                        scaleY = 1f + 0.20f * glassMorph - motionStretch * 0.22f
+                    }
+                    .width(knobWidth)
+                    .height(knobHeight)
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.92f))
+                    .background(Color.White.copy(alpha = (0.96f - 0.65f * glassMorph).coerceIn(0.30f, 0.96f)))
+                    .border(1.dp, Color.White.copy(alpha = 0.85f), CircleShape)
             )
         }
     }
 }
 
+/**
+ * Apple iOS 26 Liquid Glass Filter Chip with responsive spring tap bounce and clean Fresnel rim.
+ */
 @Composable
 fun LiquidGlassChip(
     label: String,
@@ -682,33 +952,85 @@ fun LiquidGlassChip(
 ) {
     val palette = LocalLiquidPalette.current
     val haptic = LocalHapticFeedback.current
-    val shape = RoundedCornerShape(50)
+    var isPressed by remember { mutableStateOf(false) }
+
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.93f else 1f,
+        animationSpec = spring(dampingRatio = 0.68f, stiffness = 680f),
+        label = "chipPressScale"
+    )
+    val bgColor by animateColorAsState(
+        targetValue = if (selected) {
+            palette.primaryGlow.copy(alpha = 0.28f)
+        } else {
+            Color.White.copy(alpha = 0.08f)
+        },
+        animationSpec = tween(200),
+        label = "chipBg"
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (selected) {
+            Color.White.copy(alpha = 0.52f)
+        } else {
+            Color.White.copy(alpha = 0.16f)
+        },
+        animationSpec = tween(200),
+        label = "chipBorder"
+    )
 
     Box(
         modifier = modifier
-            .clip(shape)
-            .background(
-                if (selected) {
-                    Brush.horizontalGradient(
-                        listOf(
-                            palette.primaryGlow.copy(alpha = 0.28f),
-                            palette.secondaryGlow.copy(alpha = 0.22f)
-                        )
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(CircleShape)
+            .background(bgColor)
+            .drawWithContent {
+                drawContent()
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = if (selected) 0.18f else 0.06f),
+                            Color.Transparent
+                        ),
+                        startY = 0f,
+                        endY = size.height * 0.55f
                     )
-                } else {
-                    Brush.horizontalGradient(
-                        listOf(Color(0x66161C2E), Color(0x4D111624))
-                    )
-                }
-            )
+                )
+            }
             .border(
-                width = 1.dp,
-                color = if (selected) palette.primaryGlow.copy(alpha = 0.65f) else Color.White.copy(alpha = 0.14f),
-                shape = shape
+                width = 0.7.dp,
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        borderColor,
+                        borderColor.copy(alpha = 0.25f),
+                        borderColor.copy(alpha = 0.55f)
+                    )
+                ),
+                shape = CircleShape
             )
-            .clickable {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                onClick()
+            .pointerInput(onClick) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    isPressed = true
+                    var cancelled = false
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: break
+                        if (!change.pressed) break
+                        if (change.position.x < -20f || change.position.y < -20f ||
+                            change.position.x > size.width + 20f || change.position.y > size.height + 20f
+                        ) {
+                            cancelled = true
+                        }
+                    }
+                    isPressed = false
+                    if (!cancelled) {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onClick()
+                    }
+                }
             }
             .padding(horizontal = 16.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center
@@ -716,7 +1038,7 @@ fun LiquidGlassChip(
         Text(
             text = label,
             style = MaterialTheme.typography.labelLarge,
-            color = if (selected) FrostWhite else Color(0xFFB5C4DA)
+            color = if (selected) FrostWhite else Color(0xFFD0D9E8)
         )
     }
 }
@@ -737,11 +1059,11 @@ fun TrackArtwork(
                 Brush.linearGradient(
                     listOf(
                         palette.deepAurora.copy(alpha = 0.72f),
-                        Color(0xFF0E1426)
+                        AppleGlassTokens.NeutralDarkTint
                     )
                 )
             )
-            .border(0.75.dp, Color.White.copy(alpha = 0.16f), shape),
+            .border(0.65.dp, Color.White.copy(alpha = 0.18f), shape),
         contentAlignment = Alignment.Center
     ) {
         Icon(
