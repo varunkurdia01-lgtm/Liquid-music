@@ -193,6 +193,9 @@ fun FloatingLiquidMiniPlayer(
 ) {
     val track = playerState.currentTrack ?: return
     val palette = LocalLiquidPalette.current
+    val activeAccent = remember(palette.primaryGlow) {
+        AppleGlassTokens.ensureVibrantOnDarkGlass(palette.primaryGlow)
+    }
     val haptic = LocalHapticFeedback.current
     val physics = rememberMiniPlayerPillPhysics()
 
@@ -214,7 +217,7 @@ fun FloatingLiquidMiniPlayer(
     LiquidGlassSurface(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp)
+            .padding(horizontal = 16.dp)
             .height(66.dp)
             .animateContentSize(animationSpec = MiniPlayerSpringSpecs.LayoutSizeSpring)
             .testTag("floating_mini_player")
@@ -232,33 +235,35 @@ fun FloatingLiquidMiniPlayer(
                 onSkipPrevious = if (swipeToSongEnabled) onSkipPrevious else ({})
             ),
         cornerRadius = 33.dp,
-        tintColor = AppleGlassTokens.NeutralDarkTint,
-        surfaceAlpha = 0.34f,
-        highlightAccent = palette.primaryGlow,
-        refractionBoost = 1.15f,
-        blurOverrideDp = 8f
+        tintColor = AppleGlassTokens.SmokedCrystalBase,
+        surfaceAlpha = 0.29f,
+        highlightAccent = activeAccent,
+        refractionBoost = 1.42f,
+        blurOverrideDp = 5.5f,
+        smokedCrystalRim = true
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .drawWithContent {
                     drawContent()
-                    // iOS 26 directional specular rim highlight that glides smoothly under your thumb
+                    // iOS 26 directional Fresnel specular rim that glides smoothly under your thumb
                     val focusX = size.width * physics.specularFraction.value
-                    val glowBoost = 0.36f + 0.38f * physics.touchGlow.value
+                    val touchGlowVal = physics.touchGlow.value
+                    val glowBoost = 0.34f + 0.46f * touchGlowVal
                     val radiusPx = size.height / 2f
                     drawRoundRect(
                         brush = Brush.radialGradient(
                             colors = listOf(
                                 Color.White.copy(alpha = glowBoost),
-                                Color.White.copy(alpha = glowBoost * 0.28f),
+                                activeAccent.copy(alpha = (0.14f + 0.26f * touchGlowVal)),
                                 Color.Transparent
                             ),
                             center = Offset(focusX, 0f),
-                            radius = size.width * 0.58f
+                            radius = size.width * 0.56f
                         ),
                         cornerRadius = CornerRadius(radiusPx, radiusPx),
-                        style = Stroke(width = 1.15.dp.toPx())
+                        style = Stroke(width = (1.05f + 0.35f * touchGlowVal).dp.toPx())
                     )
                 }
         ) {
@@ -390,7 +395,7 @@ fun FloatingLiquidMiniPlayer(
                 ) {
                     if (playerState.isBuffering) {
                         CircularProgressIndicator(
-                            color = palette.primaryGlow,
+                            color = activeAccent,
                             strokeWidth = 2.dp,
                             modifier = Modifier.size(20.dp)
                         )
@@ -452,7 +457,9 @@ private fun MiniPlayerProgressLine(
         label = "miniPlayerProgress"
     )
     val progressBrush = remember(palette.secondaryGlow, palette.primaryGlow) {
-        Brush.horizontalGradient(listOf(palette.secondaryGlow, palette.primaryGlow))
+        val vibrantPrimary = AppleGlassTokens.ensureVibrantOnDarkGlass(palette.primaryGlow)
+        val vibrantSecondary = AppleGlassTokens.ensureVibrantOnDarkGlass(palette.secondaryGlow)
+        Brush.horizontalGradient(listOf(vibrantSecondary, vibrantPrimary))
     }
     Box(
         modifier = modifier

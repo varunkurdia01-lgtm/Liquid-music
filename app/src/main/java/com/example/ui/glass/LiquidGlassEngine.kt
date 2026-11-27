@@ -60,8 +60,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -110,6 +112,8 @@ val LocalLiquidBackdrop = compositionLocalOf<Backdrop?> { null }
  */
 object AppleGlassTokens {
     val NeutralDarkTint = Color(0xFF141822)
+    val SmokedCrystalBase = Color(0xFF10141D)
+    val SmokedCrystalInnerShadow = Color(0xFF05070C)
     val ElevatedDarkTint = Color(0xFF1D2230)
     val AppleSystemGreen = Color(0xFF34C759)
     val AppleSystemBlue = Color(0xFF0A84FF)
@@ -117,6 +121,17 @@ object AppleGlassTokens {
     val SpecularRimTop = Color.White.copy(alpha = 0.34f)
     val SpecularRimMid = Color.White.copy(alpha = 0.07f)
     val SpecularRimBottom = Color.White.copy(alpha = 0.16f)
+
+    /**
+     * Guarantees dynamic album-art accent colors stay luminous and high-contrast
+     * over smoked dark optical glass without washing out vibrant hues.
+     */
+    fun ensureVibrantOnDarkGlass(accent: Color): Color {
+        val lum = accent.luminance()
+        if (lum >= 0.36f) return accent
+        val lift = ((0.38f - lum) * 1.45f).coerceIn(0f, 0.58f)
+        return lerp(accent, Color.White, lift)
+    }
 }
 
 /**
@@ -294,6 +309,7 @@ fun LiquidGlassSurface(
     backdropOverride: Backdrop? = null,
     refractionBoost: Float = 1f,
     blurOverrideDp: Float? = null,
+    smokedCrystalRim: Boolean = false,
     content: @Composable BoxScope.() -> Unit
 ) {
     val glassTier = LocalGlassQuality.current
@@ -327,7 +343,7 @@ fun LiquidGlassSurface(
                                 refractionHeight = (glassConfig.refractionHeightDp * refractionBoost).dp.toPx(),
                                 refractionAmount = (glassConfig.refractionAmountDp * refractionBoost).dp.toPx(),
                                 depthEffect = true,
-                                chromaticAberration = glassConfig.chromaticAberration
+                                chromaticAberration = glassConfig.chromaticAberration || smokedCrystalRim
                             )
                         }
                     },
@@ -337,16 +353,44 @@ fun LiquidGlassSurface(
                         if (veilAlpha > 0.01f) {
                             drawRect(tintColor.copy(alpha = veilAlpha))
                         }
-                        // Whisper-soft top optical sheen matching Apple iOS 26 curved glass
-                        drawRect(
-                            brush = Brush.verticalGradient(
-                                colors = listOf(
-                                    Color.White.copy(alpha = 0.08f),
-                                    Color.Transparent,
-                                    Color.White.copy(alpha = 0.02f)
+                        if (smokedCrystalRim) {
+                            // Convex top crown highlight + subtle bottom internal glass thickness bevel
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    colorStops = arrayOf(
+                                        0.0f to Color.White.copy(alpha = 0.14f),
+                                        0.26f to Color.White.copy(alpha = 0.02f),
+                                        0.74f to Color.Transparent,
+                                        1.0f to AppleGlassTokens.SmokedCrystalInnerShadow.copy(alpha = 0.30f)
+                                    )
                                 )
                             )
-                        )
+                            val rPx = cornerRadius.toPx().coerceAtMost(size.minDimension / 2f)
+                            val strokePx = 0.95.dp.toPx()
+                            drawRoundRect(
+                                brush = Brush.verticalGradient(
+                                    colorStops = arrayOf(
+                                        0.0f to Color.White.copy(alpha = 0.50f),
+                                        0.38f to Color.White.copy(alpha = 0.10f),
+                                        0.70f to Color.White.copy(alpha = 0.09f),
+                                        1.0f to Color.White.copy(alpha = 0.32f)
+                                    )
+                                ),
+                                cornerRadius = CornerRadius(rPx, rPx),
+                                style = Stroke(width = strokePx)
+                            )
+                        } else {
+                            // Whisper-soft top optical sheen matching Apple iOS 26 curved glass
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color.White.copy(alpha = 0.08f),
+                                        Color.Transparent,
+                                        Color.White.copy(alpha = 0.02f)
+                                    )
+                                )
+                            )
+                        }
                     }
                 ),
             content = content
@@ -354,23 +398,44 @@ fun LiquidGlassSurface(
     } else {
         // Lightweight Apple iOS 26 dark frosted material for high-frequency scrolling lists & Battery Saver
         val subtleAccent = highlightAccent ?: Color.White
-        val bgBrush = remember(tintColor, surfaceAlpha) {
-            Brush.verticalGradient(
-                colors = listOf(
-                    tintColor.copy(alpha = (surfaceAlpha + 0.38f).coerceIn(0.58f, 0.84f)),
-                    tintColor.copy(alpha = (surfaceAlpha + 0.30f).coerceIn(0.50f, 0.78f))
+        val bgBrush = remember(tintColor, surfaceAlpha, smokedCrystalRim) {
+            if (smokedCrystalRim) {
+                Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0.0f to tintColor.copy(alpha = (surfaceAlpha + 0.48f).coerceIn(0.68f, 0.88f)),
+                        0.72f to tintColor.copy(alpha = (surfaceAlpha + 0.42f).coerceIn(0.62f, 0.84f)),
+                        1.0f to AppleGlassTokens.SmokedCrystalInnerShadow.copy(alpha = 0.90f)
+                    )
                 )
-            )
+            } else {
+                Brush.verticalGradient(
+                    colors = listOf(
+                        tintColor.copy(alpha = (surfaceAlpha + 0.38f).coerceIn(0.58f, 0.84f)),
+                        tintColor.copy(alpha = (surfaceAlpha + 0.30f).coerceIn(0.50f, 0.78f))
+                    )
+                )
+            }
         }
-        val borderBrush = remember(subtleAccent) {
-            Brush.linearGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = 0.28f),
-                    subtleAccent.copy(alpha = 0.12f),
-                    Color.White.copy(alpha = 0.06f),
-                    Color.White.copy(alpha = 0.16f)
+        val borderBrush = remember(subtleAccent, smokedCrystalRim) {
+            if (smokedCrystalRim) {
+                Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0.0f to Color.White.copy(alpha = 0.46f),
+                        0.38f to subtleAccent.copy(alpha = 0.14f),
+                        0.72f to Color.White.copy(alpha = 0.08f),
+                        1.0f to Color.White.copy(alpha = 0.28f)
+                    )
                 )
-            )
+            } else {
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.28f),
+                        subtleAccent.copy(alpha = 0.12f),
+                        Color.White.copy(alpha = 0.06f),
+                        Color.White.copy(alpha = 0.16f)
+                    )
+                )
+            }
         }
         Box(
             modifier = modifier
@@ -380,7 +445,7 @@ fun LiquidGlassSurface(
                     val rPx = cornerRadius.toPx()
                     val sheen = Brush.verticalGradient(
                         colors = listOf(
-                            Color.White.copy(alpha = 0.07f),
+                            Color.White.copy(alpha = if (smokedCrystalRim) 0.12f else 0.07f),
                             Color.Transparent
                         ),
                         startY = 0f,
@@ -395,7 +460,7 @@ fun LiquidGlassSurface(
                     }
                 }
                 .border(
-                    width = 0.65.dp,
+                    width = if (smokedCrystalRim) 0.9.dp else 0.65.dp,
                     brush = borderBrush,
                     shape = shape
                 ),
