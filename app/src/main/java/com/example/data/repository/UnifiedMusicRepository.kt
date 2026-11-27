@@ -30,12 +30,18 @@ import com.example.domain.model.StreamResolution
 import com.example.domain.model.Track
 import com.example.domain.model.UnifiedSearchResults
 import com.example.domain.model.YouTubeAccountInfo
+import com.example.data.remote.innertube.PlayerClient
 import com.example.domain.provider.MusicCatalogProvider
 import com.example.domain.provider.StreamResolverProvider
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 data class YouTubeSyncSummary(
     val likedSongsSynced: Int = 0,
@@ -73,9 +79,22 @@ class UnifiedMusicRepository(
     private val audiusFallback: AudiusFallbackProvider? = null,
     private val soundCloudFallback: SoundCloudFallbackProvider? = null,
     private val bilibiliFallback: BilibiliFallbackProvider? = null,
+    private val okHttpClient: OkHttpClient? = null,
     private val onProxyConfigured: ((Boolean, String) -> Unit)? = null
 ) {
     private val trackRegistry = ConcurrentHashMap<String, Track>()
+    private val failedProvidersByTrack = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
+    private val failedUrlsByTrack = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
+    private val ytFailureCountByTrack = ConcurrentHashMap<String, Int>()
+
+    private val probeClient: OkHttpClient? by lazy {
+        okHttpClient?.newBuilder()
+            ?.connectTimeout(2500, TimeUnit.MILLISECONDS)
+            ?.readTimeout(2500, TimeUnit.MILLISECONDS)
+            ?.callTimeout(3500, TimeUnit.MILLISECONDS)
+            ?.followRedirects(true)
+            ?.build()
+    }
 
     @Volatile
     var preferExtensionAudio: Boolean = false
@@ -227,6 +246,85 @@ class UnifiedMusicRepository(
         val videoId = track?.providerTrackId?.ifBlank { trackId.removePrefix("ytm_") }
             ?: trackId.removePrefix("ytm_")
         innerTubeProvider?.invalidateStream(videoId)
+    }
+
+    /**
+     * Records a stream HTTP refusal/playback failure (e.g. HTTP 567 or HTTP 403) so the next
+     * resolution immediately rotates away from the dead URL/provider instead of hammering it.
+     */
+    fun markStreamFailed(
+        trackId: String,
+        failedUrl: String? = null,
+        resolution: StreamResolution? = null,
+        statusCode: Int = 0
+    ) {
+        if (trackId.isBlank()) return
+        invalidateStream(trackId)
+        val expiresAt = System.currentTimeMillis() + FAILED_PROVIDER_TTL_MS
+
+        if (!failedUrl.isNullOrBlank()) {
+            failedUrlsByTrack.getOrPut(trackId) { ConcurrentHashMap() }[failedUrl] = expiresAt
+            InnerTubeXResolver.onRefused(failedUrl, trackId)
+        }
+
+        val slot = inferProviderSlot(resolution, failedUrl) ?: return
+        if (slot == PROVIDER_YOUTUBE_MUSIC) {
+            val count = (ytFailureCountByTrack[trackId] ?: 0) + 1
+            ytFailureCountByTrack[trackId] = count
+            // Allow 1 YouTube profile-rotation retry before failing over to secondary providers
+            if (count >= 2) {
+                failedProvidersByTrack.getOrPut(trackId) { ConcurrentHashMap() }[slot] = expiresAt
+            }
+            Log.w(TAG, "YouTube Music stream failed for $trackId (HTTP $statusCode, strike $count)")
+        } else {
+            failedProvidersByTrack.getOrPut(trackId) { ConcurrentHashMap() }[slot] = expiresAt
+            Log.w(TAG, "Marked provider $slot failed for $trackId (HTTP $statusCode)")
+        }
+    }
+
+    fun clearTrackFailures(trackId: String) {
+        if (trackId.isBlank()) return
+        failedProvidersByTrack.remove(trackId)
+        failedUrlsByTrack.remove(trackId)
+        ytFailureCountByTrack.remove(trackId)
+    }
+
+    private fun inferProviderSlot(resolution: StreamResolution?, url: String?): String? {
+        val client = resolution?.clientName.orEmpty()
+        when {
+            client.contains("SoundCloud", ignoreCase = true) -> return PROVIDER_SOUNDCLOUD
+            client.contains("Bilibili", ignoreCase = true) -> return PROVIDER_BILIBILI
+            client.contains("Audius", ignoreCase = true) -> return PROVIDER_AUDIUS
+        }
+        when (resolution?.resolvedBy) {
+            MusicSource.YOUTUBE_MUSIC -> return PROVIDER_YOUTUBE_MUSIC
+            MusicSource.JIOSAAVN -> return PROVIDER_JIOSAAVN
+            MusicSource.ECHO_ADDON -> return PROVIDER_ECHO_ADDON
+            else -> Unit
+        }
+        val lower = url.orEmpty().lowercase()
+        return when {
+            lower.contains("googlevideo.com") || lower.contains("youtube.com") -> PROVIDER_YOUTUBE_MUSIC
+            lower.contains("sndcdn.com") || lower.contains("soundcloud") -> PROVIDER_SOUNDCLOUD
+            lower.contains("bilivideo") || lower.contains("bilibili") -> PROVIDER_BILIBILI
+            lower.contains("saavn") -> PROVIDER_JIOSAAVN
+            lower.contains("audius") -> PROVIDER_AUDIUS
+            else -> null
+        }
+    }
+
+    private fun isProviderFailed(trackId: String, slot: String): Boolean {
+        val map = failedProvidersByTrack[trackId] ?: return false
+        val now = System.currentTimeMillis()
+        map.entries.removeAll { it.value <= now }
+        return map.containsKey(slot)
+    }
+
+    private fun isUrlFailed(trackId: String, url: String): Boolean {
+        val map = failedUrlsByTrack[trackId] ?: return false
+        val now = System.currentTimeMillis()
+        map.entries.removeAll { it.value <= now }
+        return map.containsKey(url)
     }
 
     fun getActiveVisitorData(): String = innerTubeClient?.visitorData.orEmpty()
@@ -471,58 +569,231 @@ class UnifiedMusicRepository(
             )
         }
 
-        // 3. Respect the user's selected audio quality tier (96k / 160k / 320k) while trying YouTube Music first by default
+        // 3. Respect the user's selected audio quality tier (96k / 160k / 320k) while verifying reachability
         val requestedQuality = quality
         val forceExtensionFirst = preferExtensionAudio || playbackEngine == EchoPlaybackEngine.EXTENSION_FIRST
 
+        resolveFromHealthyProviders(track, requestedQuality, forceExtensionFirst)?.let { return it }
+
+        // If every provider had been previously excluded for this track (e.g., transient network drop),
+        // reset exclusions once and attempt a clean resolution pass.
+        if (failedProvidersByTrack[track.id]?.isNotEmpty() == true) {
+            clearTrackFailures(track.id)
+            resolveFromHealthyProviders(track, requestedQuality, forceExtensionFirst)?.let { return it }
+        }
+        return null
+    }
+
+    private suspend fun resolveFromHealthyProviders(
+        track: Track,
+        requestedQuality: AudioQuality,
+        forceExtensionFirst: Boolean
+    ): StreamResolution? {
         if (forceExtensionFirst) {
-            if (extensionManager?.hasActiveEchoAddons() == true) {
+            if (!isProviderFailed(track.id, PROVIDER_ECHO_ADDON) && extensionManager?.hasActiveEchoAddons() == true) {
                 val addonRes = runCatching { extensionManager?.resolveStream(track, requestedQuality) }.getOrNull()
-                if (addonRes != null) return addonRes
+                verifyCandidate(track.id, PROVIDER_ECHO_ADDON, addonRes)?.let { return it }
             }
-            val ytRes = runCatching { primaryStream.resolveStream(track, requestedQuality) }.getOrNull()
-            if (ytRes != null) return ytRes.copy(usedFallback = false)
-            val direct = runCatching { fallbackStream.resolveStream(track, requestedQuality) }.getOrNull()
-            if (direct != null) return direct
+            resolveVerifiedYouTube(track, requestedQuality)?.let { return it.copy(usedFallback = false) }
+            if (!isProviderFailed(track.id, PROVIDER_JIOSAAVN)) {
+                val direct = runCatching { fallbackStream.resolveStream(track, requestedQuality) }.getOrNull()
+                verifyCandidate(track.id, PROVIDER_JIOSAAVN, direct)?.let { return it }
+            }
         } else {
-            // 4. Primary YouTube Music InnerTubeX stream resolution at highest available bitrate (256k AAC / 160k Opus)
-            val primaryRes = runCatching { primaryStream.resolveStream(track, requestedQuality) }.getOrNull()
-            if (primaryRes != null) return primaryRes
+            // 4. Primary YouTube Music InnerTubeX stream resolution (with 1 automatic profile-switch retry on 403/567)
+            resolveVerifiedYouTube(track, requestedQuality)?.let { return it }
 
             // 5. Try configured Echo Music Addon (strict TrackMatcher verified)
-            if (track.sourceProvider == MusicSource.ECHO_ADDON || extensionManager?.hasActiveEchoAddons() == true) {
+            if (!isProviderFailed(track.id, PROVIDER_ECHO_ADDON) &&
+                (track.sourceProvider == MusicSource.ECHO_ADDON || extensionManager?.hasActiveEchoAddons() == true)
+            ) {
                 val addonRes = runCatching { extensionManager?.resolveStream(track, requestedQuality) }.getOrNull()
-                if (addonRes != null) return addonRes.copy(usedFallback = track.sourceProvider != MusicSource.ECHO_ADDON)
+                verifyCandidate(track.id, PROVIDER_ECHO_ADDON, addonRes)?.let {
+                    return it.copy(usedFallback = track.sourceProvider != MusicSource.ECHO_ADDON)
+                }
             }
 
             // 6. Strict TrackMatcher-verified JioSaavn 320kbps failover (returns null rather than wrong song!)
-            Log.w(TAG, "YouTube Music stream unavailable for '${track.title}' — trying highest-quality fallback providers")
-            val fallbackRes = runCatching { fallbackStream.resolveStream(track, requestedQuality) }.getOrNull()
-            if (fallbackRes != null) return fallbackRes.copy(usedFallback = track.sourceProvider != MusicSource.JIOSAAVN)
+            if (!isProviderFailed(track.id, PROVIDER_JIOSAAVN)) {
+                Log.w(TAG, "YouTube Music stream unavailable for '${track.title}' — trying highest-quality fallback providers")
+                val fallbackRes = runCatching { fallbackStream.resolveStream(track, requestedQuality) }.getOrNull()
+                verifyCandidate(track.id, PROVIDER_JIOSAAVN, fallbackRes)?.let {
+                    return it.copy(usedFallback = track.sourceProvider != MusicSource.JIOSAAVN)
+                }
+            }
         }
 
         // 7. Global zero-auth SoundCloud full-track failover (strictly TrackMatcher-verified, skips 30s previews)
-        val soundCloudRes = runCatching { soundCloudFallback?.resolveStream(track, requestedQuality) }.getOrNull()
-        if (soundCloudRes != null) return soundCloudRes
+        if (!isProviderFailed(track.id, PROVIDER_SOUNDCLOUD)) {
+            val soundCloudRes = runCatching { soundCloudFallback?.resolveStream(track, requestedQuality) }.getOrNull()
+            verifyCandidate(track.id, PROVIDER_SOUNDCLOUD, soundCloudRes)?.let { return it }
+        }
 
-        // 8. Global zero-auth Bilibili full-track DASH M4A audio failover (covers major-label catalog without geo/Go+ paywalls)
-        val bilibiliRes = runCatching { bilibiliFallback?.resolveStream(track, requestedQuality) }.getOrNull()
-        if (bilibiliRes != null) return bilibiliRes
+        // 8. Global zero-auth Bilibili full-track DASH M4A audio failover
+        if (!isProviderFailed(track.id, PROVIDER_BILIBILI)) {
+            val bilibiliRes = runCatching { bilibiliFallback?.resolveStream(track, requestedQuality) }.getOrNull()
+            verifyCandidate(track.id, PROVIDER_BILIBILI, bilibiliRes)?.let { return it }
+        }
 
         // 9. Decentralized zero-auth Audius full-track failover (strictly TrackMatcher-verified)
-        val audiusRes = runCatching { audiusFallback?.resolveStream(track, requestedQuality) }.getOrNull()
-        if (audiusRes != null) return audiusRes
+        if (!isProviderFailed(track.id, PROVIDER_AUDIUS)) {
+            val audiusRes = runCatching { audiusFallback?.resolveStream(track, requestedQuality) }.getOrNull()
+            verifyCandidate(track.id, PROVIDER_AUDIUS, audiusRes)?.let { return it }
+        }
 
         // 10. Last resort: any pre-attached HTTP URL on the track itself
-        val lastResort = track.bestPlaybackUri(requestedQuality)
-        if (lastResort.startsWith("http")) {
-            return StreamResolution(
-                uri = lastResort,
-                resolvedBy = track.sourceProvider,
-                bitrateKbps = requestedQuality.kbps,
-                usedFallback = true
-            )
+        if (!isProviderFailed(track.id, PROVIDER_LAST_RESORT)) {
+            val lastResort = track.bestPlaybackUri(requestedQuality)
+            if (lastResort.startsWith("http")) {
+                val res = StreamResolution(
+                    uri = lastResort,
+                    resolvedBy = track.sourceProvider,
+                    bitrateKbps = requestedQuality.kbps,
+                    usedFallback = true
+                )
+                verifyCandidate(track.id, PROVIDER_LAST_RESORT, res)?.let { return it }
+            }
         }
         return null
+    }
+
+    private suspend fun resolveVerifiedYouTube(
+        track: Track,
+        requestedQuality: AudioQuality
+    ): StreamResolution? {
+        if (isProviderFailed(track.id, PROVIDER_YOUTUBE_MUSIC)) return null
+        repeat(2) { attempt ->
+            val primaryRes = runCatching { primaryStream.resolveStream(track, requestedQuality) }.getOrNull()
+                ?: return null
+            val verified = verifyCandidate(track.id, PROVIDER_YOUTUBE_MUSIC, primaryRes)
+            if (verified != null) return verified
+            // Candidate failed pre-flight probe (e.g. HTTP 403/567); invalidate & retry with next InnerTubeX profile
+            invalidateStream(track.id)
+            if (attempt == 1) {
+                failedProvidersByTrack.getOrPut(track.id) { ConcurrentHashMap() }[PROVIDER_YOUTUBE_MUSIC] =
+                    System.currentTimeMillis() + FAILED_PROVIDER_TTL_MS
+            }
+        }
+        return null
+    }
+
+    /**
+     * Fast pre-flight HTTP verification before handing a URL to ExoPlayer.
+     * Rejects dead / HTTP 403 / 410 / 451 / 567 / 5xx URLs (including HLS manifests & their first
+     * segment) so ExoPlayer receives a verified working stream on the first try.
+     */
+    private suspend fun verifyCandidate(
+        trackId: String,
+        providerSlot: String,
+        candidate: StreamResolution?
+    ): StreamResolution? {
+        if (candidate == null) return null
+        val uri = candidate.uri
+        if (!uri.startsWith("http", ignoreCase = true)) return candidate
+        if (isUrlFailed(trackId, uri)) return null
+
+        val client = probeClient ?: return candidate
+        val status = probeStreamReachable(client, candidate)
+        if (status in 200..299 || status == 416) {
+            return candidate
+        }
+        Log.w(TAG, "Pre-flight probe rejected $providerSlot for $trackId (HTTP $status)")
+        failedUrlsByTrack.getOrPut(trackId) { ConcurrentHashMap() }[uri] =
+            System.currentTimeMillis() + FAILED_PROVIDER_TTL_MS
+        if (providerSlot == PROVIDER_YOUTUBE_MUSIC) {
+            InnerTubeXResolver.onRefused(uri, trackId)
+        } else {
+            failedProvidersByTrack.getOrPut(trackId) { ConcurrentHashMap() }[providerSlot] =
+                System.currentTimeMillis() + FAILED_PROVIDER_TTL_MS
+        }
+        return null
+    }
+
+    private suspend fun probeStreamReachable(
+        client: OkHttpClient,
+        res: StreamResolution
+    ): Int = withContext(Dispatchers.IO) {
+        val url = res.uri
+        val isHls = res.mimeType.contains("mpegurl", ignoreCase = true) ||
+            url.contains(".m3u8", ignoreCase = true) ||
+            url.contains("manifest.googlevideo.com", ignoreCase = true) ||
+            url.contains("media-streaming.soundcloud.cloud", ignoreCase = true)
+
+        val effectiveHeaders = buildMap {
+            if (res.headers.isNotEmpty()) {
+                putAll(res.headers)
+            } else if (url.contains("googlevideo.com", ignoreCase = true)) {
+                putAll(InnerTubeXResolver.headersFor(url) ?: PlayerClient.forStreamUrl(url).mediaHeaders())
+            }
+        }
+
+        runCatching {
+            val reqBuilder = Request.Builder().url(url).get()
+            effectiveHeaders.forEach { (k, v) ->
+                if (!k.equals("Range", ignoreCase = true)) reqBuilder.header(k, v)
+            }
+            if (!isHls) {
+                reqBuilder.header("Range", "bytes=0-0")
+            }
+
+            client.newCall(reqBuilder.build()).execute().use { resp ->
+                val code = resp.code
+                if (isRefusalStatus(code)) return@use code
+                if (!isHls) return@use code
+
+                // For HLS manifests, peek the first nested playlist/segment URI so segment-level 403/567 is caught early
+                val nestedUrl = runCatching {
+                    val reader = resp.body?.charStream()?.buffered() ?: return@runCatching null
+                    var found: String? = null
+                    repeat(80) {
+                        val line = reader.readLine()?.trim() ?: return@repeat
+                        if (line.isNotEmpty() && !line.startsWith("#")) {
+                            found = if (line.startsWith("http", ignoreCase = true)) {
+                                line
+                            } else {
+                                resp.request.url.resolve(line)?.toString()
+                            }
+                            if (found != null) return@repeat
+                        }
+                    }
+                    found
+                }.getOrNull()
+
+                if (nestedUrl.isNullOrBlank()) return@use code
+
+                val nestedIsPlaylist = nestedUrl.contains(".m3u8", ignoreCase = true) ||
+                    nestedUrl.contains("manifest.googlevideo.com", ignoreCase = true)
+                val nestedReq = Request.Builder().url(nestedUrl).get().apply {
+                    effectiveHeaders.forEach { (k, v) ->
+                        if (!k.equals("Range", ignoreCase = true)) header(k, v)
+                    }
+                    if (!nestedIsPlaylist) {
+                        header("Range", "bytes=0-0")
+                    }
+                }.build()
+
+                client.newCall(nestedReq).execute().use { nestedResp ->
+                    nestedResp.code
+                }
+            }
+        }.getOrElse {
+            Log.w(TAG, "Stream probe IO failure for ${url.take(96)}: ${it.message}")
+            -1
+        }
+    }
+
+    private fun isRefusalStatus(code: Int): Boolean {
+        return code == 401 || code == 403 || code == 404 || code == 410 || code == 451 || code >= 500
+    }
+
+    companion object {
+        private const val FAILED_PROVIDER_TTL_MS = 5L * 60L * 1000L
+        private const val PROVIDER_YOUTUBE_MUSIC = "YOUTUBE_MUSIC"
+        private const val PROVIDER_ECHO_ADDON = "ECHO_ADDON"
+        private const val PROVIDER_JIOSAAVN = "JIOSAAVN"
+        private const val PROVIDER_SOUNDCLOUD = "SOUNDCLOUD"
+        private const val PROVIDER_BILIBILI = "BILIBILI"
+        private const val PROVIDER_AUDIUS = "AUDIUS"
+        private const val PROVIDER_LAST_RESORT = "LAST_RESORT"
     }
 }

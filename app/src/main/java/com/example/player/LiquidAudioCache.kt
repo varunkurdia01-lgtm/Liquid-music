@@ -55,7 +55,11 @@ object LiquidAudioCache {
     private var cacheDirRef: File? = null
 
     private val urlHeadersMap = ConcurrentHashMap<String, Map<String, String>>()
+    private val domainHeadersMap = ConcurrentHashMap<String, Map<String, String>>()
+    private val preResolvedStreams = ConcurrentHashMap<String, Pair<StreamResolution, Long>>()
     private val pendingHlsRedirectTrackIds = ConcurrentHashMap.newKeySet<String>()
+
+    private const val PRE_RESOLVED_TTL_MS = 2L * 60L * 1000L
 
     private val _cacheSizeBytes = MutableStateFlow(0L)
     val cacheSizeBytes: StateFlow<Long> = _cacheSizeBytes.asStateFlow()
@@ -63,10 +67,66 @@ object LiquidAudioCache {
     private val _lastResolution = MutableStateFlow<Pair<String, StreamResolution>?>(null)
     val lastResolution: StateFlow<Pair<String, StreamResolution>?> = _lastResolution.asStateFlow()
 
+    fun isHlsResolution(resolution: StreamResolution): Boolean {
+        return resolution.mimeType.contains("mpegurl", ignoreCase = true) ||
+            resolution.uri.contains(".m3u8", ignoreCase = true) ||
+            resolution.uri.contains("manifest.googlevideo.com", ignoreCase = true) ||
+            resolution.uri.contains("media-streaming.soundcloud.cloud", ignoreCase = true)
+    }
+
+    fun recordLastResolution(trackId: String, resolution: StreamResolution) {
+        if (trackId.isNotBlank()) {
+            _lastResolution.value = trackId to resolution
+        }
+    }
+
+    fun putPreResolved(trackId: String, resolution: StreamResolution) {
+        if (trackId.isBlank()) return
+        if (preResolvedStreams.size > 32) {
+            val now = System.currentTimeMillis()
+            preResolvedStreams.entries.removeAll { it.value.second <= now }
+            if (preResolvedStreams.size > 32) preResolvedStreams.clear()
+        }
+        preResolvedStreams[trackId] = resolution to (System.currentTimeMillis() + PRE_RESOLVED_TTL_MS)
+        if (resolution.headers.isNotEmpty()) {
+            registerUrlHeaders(resolution.uri, resolution.headers)
+        }
+    }
+
+    fun hasPreResolved(trackId: String): Boolean {
+        val entry = preResolvedStreams[trackId] ?: return false
+        if (entry.second <= System.currentTimeMillis()) {
+            preResolvedStreams.remove(trackId)
+            return false
+        }
+        return true
+    }
+
+    fun consumePreResolved(trackId: String): StreamResolution? {
+        val entry = preResolvedStreams.remove(trackId) ?: return null
+        return entry.first.takeIf { entry.second > System.currentTimeMillis() }
+    }
+
     fun registerUrlHeaders(url: String, headers: Map<String, String>) {
         if (url.isBlank() || headers.isEmpty()) return
         if (urlHeadersMap.size > 128) urlHeadersMap.clear()
         urlHeadersMap[url] = headers
+        val host = runCatching { Uri.parse(url).host.orEmpty() }.getOrDefault("")
+        val domain = registrableDomain(host)
+        if (domain.isNotBlank()) {
+            if (domainHeadersMap.size > 32) domainHeadersMap.clear()
+            domainHeadersMap[domain] = headers
+            if (domain == "soundcloud.cloud") {
+                domainHeadersMap["sndcdn.com"] = headers
+            }
+        }
+    }
+
+    private fun registrableDomain(host: String): String {
+        val clean = host.trim().lowercase()
+        if (clean.isBlank()) return ""
+        val parts = clean.split(".")
+        return if (parts.size >= 2) "${parts[parts.size - 2]}.${parts[parts.size - 1]}" else clean
     }
 
     fun markHlsRedirectPending(trackId: String) {
@@ -105,6 +165,7 @@ object LiquidAudioCache {
     }
 
     fun evictTrackCache(trackId: String) {
+        preResolvedStreams.remove(trackId)
         val cache = simpleCache ?: return
         runCatching {
             cache.keys.toList()
@@ -117,11 +178,25 @@ object LiquidAudioCache {
     }
 
     fun onHttpRefusal(cacheKey: String?, url: String, statusCode: Int) {
-        Log.w(TAG, "HTTP $statusCode refusal for key=$cacheKey")
-        InnerTubeXResolver.onRefused(url)
+        val derivedTrackId = extractTrackIdFromCacheKey(cacheKey) ?: _lastResolution.value?.first
+        Log.w(TAG, "HTTP $statusCode refusal for key=$cacheKey track=$derivedTrackId")
+        InnerTubeXResolver.onRefused(url, derivedTrackId)
+        if (!derivedTrackId.isNullOrBlank()) {
+            preResolvedStreams.remove(derivedTrackId)
+        }
         if (!cacheKey.isNullOrBlank()) {
             runCatching { simpleCache?.removeResource(cacheKey) }
         }
+    }
+
+    private fun extractTrackIdFromCacheKey(cacheKey: String?): String? {
+        if (cacheKey.isNullOrBlank()) return null
+        val markers = listOf("_YOUTUBE_MUSIC_", "_JIOSAAVN_", "_ECHO_ADDON_", "_LOCAL_")
+        for (marker in markers) {
+            val idx = cacheKey.indexOf(marker)
+            if (idx > 0) return cacheKey.substring(0, idx)
+        }
+        return cacheKey
     }
 
     suspend fun clearCache(context: Context): Long = withContext(Dispatchers.IO) {
@@ -186,7 +261,7 @@ object LiquidAudioCache {
                         .build()
                 }
 
-                val resolution = runBlocking(Dispatchers.IO) {
+                val resolution = consumePreResolved(trackId) ?: runBlocking(Dispatchers.IO) {
                     val track = musicRepository.findRegisteredTrack(trackId)
                         ?: throw IOException("Track metadata unavailable for $trackId")
                     musicRepository.resolvePlaybackStream(track, quality)
@@ -195,10 +270,7 @@ object LiquidAudioCache {
                 _lastResolution.value = trackId to resolution
                 refreshCacheSize()
 
-                val isHls = resolution.mimeType.contains("mpegurl", ignoreCase = true) ||
-                    resolution.uri.contains(".m3u8", ignoreCase = true) ||
-                    resolution.uri.contains("manifest.googlevideo.com", ignoreCase = true)
-                if (isHls) {
+                if (isHlsResolution(resolution)) {
                     if (resolution.headers.isNotEmpty()) {
                         registerUrlHeaders(resolution.uri, resolution.headers)
                     }
@@ -237,15 +309,14 @@ object LiquidAudioCache {
             } else {
                 refreshCacheSize()
                 val rawUrl = uri.toString()
-                val isYouTubeMediaUrl = uri.host?.let { host ->
-                    host.contains("googlevideo.com", ignoreCase = true) ||
-                        host.contains("youtube.com", ignoreCase = true)
-                } == true
+                val host = uri.host.orEmpty()
+                val isYouTubeMediaUrl = host.contains("googlevideo.com", ignoreCase = true) ||
+                    host.contains("youtube.com", ignoreCase = true)
                 val storedHeaders = urlHeadersMap[rawUrl]
-                    ?: uri.host?.let { host ->
+                    ?: host.takeIf { it.isNotBlank() }?.let { h ->
                         urlHeadersMap.entries.firstOrNull { (k, _) ->
-                            runCatching { Uri.parse(k).host.equals(host, ignoreCase = true) }.getOrDefault(false)
-                        }?.value
+                            runCatching { Uri.parse(k).host.equals(h, ignoreCase = true) }.getOrDefault(false)
+                        }?.value ?: domainHeadersMap[registrableDomain(h)]
                     }
                 if (!storedHeaders.isNullOrEmpty()) {
                     val merged = buildMap {

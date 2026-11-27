@@ -90,7 +90,10 @@ object InnerTubeXResolver {
     /** Remembers headers and client profile for each minted stream URL. */
     private val minted = ConcurrentHashMap<String, Extracted>()
 
-    /** Per-videoId excluded client profile IDs after a mid-playback 403/410 refusal. */
+    /** Tracks most recent extracted profile per videoId so HLS segment refusals still exclude it. */
+    private val lastProfileByVideoId = ConcurrentHashMap<String, String>()
+
+    /** Per-videoId excluded client profile IDs after a mid-playback 403/410/567 refusal. */
     private val excluded = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
 
     private val tokenProvider = object : TokenProvider {
@@ -339,20 +342,55 @@ object InnerTubeXResolver {
         )
         if (minted.size >= MAX_REMEMBERED) minted.clear()
         minted[extracted.url] = extracted
+        if (lastProfileByVideoId.size >= MAX_REMEMBERED) lastProfileByVideoId.clear()
+        lastProfileByVideoId[videoId] = extracted.profileId
         return extracted
     }
 
-    fun headersFor(url: String): Map<String, String>? = minted[url]?.headers
+    fun headersFor(url: String): Map<String, String>? {
+        minted[url]?.headers?.let { return it }
+        if (url.contains("googlevideo.com", ignoreCase = true)) {
+            return minted.values.lastOrNull {
+                it.url.contains("googlevideo.com", ignoreCase = true) && it.headers.isNotEmpty()
+            }?.headers
+        }
+        return null
+    }
 
     /**
-     * Records that googlevideo refused [url] (e.g. HTTP 403/410) so the next retry excludes
-     * that client profile and refreshes cipher configs.
+     * Records that googlevideo refused [url] (e.g. HTTP 403/410/567) so the next retry excludes
+     * that client profile and refreshes cipher configs. Handles both exact progressive URLs and
+     * HLS media segment URLs whose manifest URL was originally stored in [minted].
      */
-    fun onRefused(url: String): String? {
-        val refused = minted.remove(url) ?: return null
-        exclude(refused.videoId, refused.profileId)
-        scope.launch { runCatching { cipherService.refreshAfterStreamRejection() } }
-        return refused.videoId
+    fun onRefused(url: String, trackId: String? = null): String? {
+        val exact = minted.remove(url)
+        if (exact != null) {
+            exclude(exact.videoId, exact.profileId)
+            scope.launch { runCatching { cipherService.refreshAfterStreamRejection() } }
+            return exact.videoId
+        }
+        val derivedVideoId = trackId
+            ?.removePrefix("ytm_")
+            ?.substringBefore("_")
+            ?.takeIf { it.length >= 8 }
+            ?: run {
+                if (url.contains("googlevideo.com", ignoreCase = true)) {
+                    minted.values.lastOrNull {
+                        it.url.contains("manifest.googlevideo.com", ignoreCase = true) ||
+                            it.url.contains("googlevideo.com", ignoreCase = true)
+                    }?.videoId
+                } else null
+            }
+        if (derivedVideoId != null) {
+            val profileId = lastProfileByVideoId[derivedVideoId]
+            if (!profileId.isNullOrBlank()) {
+                exclude(derivedVideoId, profileId)
+                minted.entries.removeAll { it.value.videoId == derivedVideoId }
+                scope.launch { runCatching { cipherService.refreshAfterStreamRejection() } }
+                return derivedVideoId
+            }
+        }
+        return null
     }
 
     fun exclude(videoId: String, profileId: String) {
@@ -365,6 +403,7 @@ object InnerTubeXResolver {
     fun onSessionChanged() {
         excluded.clear()
         minted.clear()
+        lastProfileByVideoId.clear()
         if (prefs != null) warm(0L)
     }
 

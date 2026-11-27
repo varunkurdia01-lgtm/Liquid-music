@@ -14,6 +14,8 @@ import com.example.domain.model.AudioLoudnessPreset
 import com.example.domain.model.AudioQuality
 import com.example.domain.model.EchoPlaybackEngine
 import com.example.domain.model.EqPreset
+import com.example.domain.model.GlassAccentMode
+import com.example.domain.model.GlassHighlightStyle
 import com.example.domain.model.GlassOpticalPreset
 import com.example.domain.model.GlassQualityTier
 import com.example.domain.model.LiquidGlassConfig
@@ -73,6 +75,27 @@ class PreferencesRepository(private val context: Context) : AuthRepository {
         val GLASS_REFRACTION_AMOUNT = floatPreferencesKey("glass_refraction_amount")
         val GLASS_BLUR_RADIUS = floatPreferencesKey("glass_blur_radius")
         val GLASS_CHROMATIC = booleanPreferencesKey("glass_chromatic")
+        val GLASS_ALWAYS_LENS_AT_REST = booleanPreferencesKey("glass_always_lens_at_rest")
+        val GLASS_IDLE_TINT_ALPHA = floatPreferencesKey("glass_idle_tint_alpha")
+        val GLASS_RESTING_PILL_ALPHA = floatPreferencesKey("glass_resting_pill_alpha")
+        val GLASS_RIM_HIGHLIGHT_ALPHA = floatPreferencesKey("glass_rim_highlight_alpha")
+        val GLASS_HELD_REFRACTION_HEIGHT = floatPreferencesKey("glass_held_refraction_height")
+        val GLASS_HELD_REFRACTION_AMOUNT = floatPreferencesKey("glass_held_refraction_amount")
+        val GLASS_HELD_BLUR_RADIUS = floatPreferencesKey("glass_held_blur_radius")
+        val GLASS_HELD_TINT_ALPHA = floatPreferencesKey("glass_held_tint_alpha")
+        val GLASS_HELD_SCALE_X = floatPreferencesKey("glass_held_scale_x")
+        val GLASS_HELD_SCALE_Y = floatPreferencesKey("glass_held_scale_y")
+        val GLASS_VELOCITY_STRETCH = floatPreferencesKey("glass_velocity_stretch")
+        val GLASS_HELD_RIM_ALPHA = floatPreferencesKey("glass_held_rim_alpha")
+        val GLASS_TAP_GLIDE_MS = intPreferencesKey("glass_tap_glide_ms")
+        val GLASS_DEPTH_EFFECT = booleanPreferencesKey("glass_depth_effect")
+        val GLASS_VIBRANCY = booleanPreferencesKey("glass_vibrancy")
+        val GLASS_SATURATION = floatPreferencesKey("glass_saturation")
+        val GLASS_BRIGHTNESS = floatPreferencesKey("glass_brightness")
+        val GLASS_HIGHLIGHT_STYLE = stringPreferencesKey("glass_highlight_style")
+        val GLASS_ACCENT_MODE = stringPreferencesKey("glass_accent_mode")
+        val GLASS_DETACHED_SEARCH_ORB = booleanPreferencesKey("glass_detached_search_orb")
+        val GLASS_MINI_PLAYER_REFRACTION_BOOST = floatPreferencesKey("glass_mini_player_refraction_boost")
 
         val EQ_PRESET = stringPreferencesKey("eq_preset")
         val EQ_BANDS = stringPreferencesKey("eq_bands_csv")
@@ -269,12 +292,33 @@ class PreferencesRepository(private val context: Context) : AuthRepository {
             prefs[Keys.GLASS_QUALITY] = updated.glassQualityTier.name
             prefs[Keys.GLASS_OPTICAL_PRESET] = g.opticalPreset.name
             prefs[Keys.GLASS_PILL_SCALE] = g.pillScale.coerceIn(0.85f, 1.25f)
-            prefs[Keys.GLASS_SPRING_STIFFNESS] = g.springStiffness.coerceIn(180f, 750f)
-            prefs[Keys.GLASS_SPRING_DAMPING] = g.springDamping.coerceIn(0.42f, 0.95f)
-            prefs[Keys.GLASS_REFRACTION_HEIGHT] = g.refractionHeightDp.coerceIn(4f, 36f)
-            prefs[Keys.GLASS_REFRACTION_AMOUNT] = g.refractionAmountDp.coerceIn(8f, 64f)
-            prefs[Keys.GLASS_BLUR_RADIUS] = g.blurRadiusDp.coerceIn(0f, 32f)
+            prefs[Keys.GLASS_SPRING_STIFFNESS] = g.springStiffness.coerceIn(180f, 850f)
+            prefs[Keys.GLASS_SPRING_DAMPING] = g.springDamping.coerceIn(0.40f, 0.95f)
+            prefs[Keys.GLASS_REFRACTION_HEIGHT] = g.refractionHeightDp.coerceIn(0f, 24f)
+            prefs[Keys.GLASS_REFRACTION_AMOUNT] = g.refractionAmountDp.coerceIn(0f, 44f)
+            prefs[Keys.GLASS_BLUR_RADIUS] = g.blurRadiusDp.coerceIn(0f, 28f)
             prefs[Keys.GLASS_CHROMATIC] = g.chromaticAberration
+            prefs[Keys.GLASS_ALWAYS_LENS_AT_REST] = g.alwaysShowLensAtRest
+            prefs[Keys.GLASS_IDLE_TINT_ALPHA] = g.idleTintAlpha.coerceIn(0.0f, 0.65f)
+            prefs[Keys.GLASS_RESTING_PILL_ALPHA] = g.restingPillAlpha.coerceIn(0.0f, 0.45f)
+            prefs[Keys.GLASS_RIM_HIGHLIGHT_ALPHA] = g.rimHighlightAlpha.coerceIn(0.0f, 1.0f)
+            prefs[Keys.GLASS_HELD_REFRACTION_HEIGHT] = g.heldRefractionHeightDp.coerceIn(2f, 24f)
+            prefs[Keys.GLASS_HELD_REFRACTION_AMOUNT] = g.heldRefractionAmountDp.coerceIn(4f, 48f)
+            prefs[Keys.GLASS_HELD_BLUR_RADIUS] = g.heldBlurRadiusDp.coerceIn(0f, 16f)
+            prefs[Keys.GLASS_HELD_TINT_ALPHA] = g.heldTintAlpha.coerceIn(0.0f, 0.35f)
+            prefs[Keys.GLASS_HELD_SCALE_X] = g.heldScaleX.coerceIn(1.0f, 1.32f)
+            prefs[Keys.GLASS_HELD_SCALE_Y] = g.heldScaleY.coerceIn(1.0f, 1.38f)
+            prefs[Keys.GLASS_VELOCITY_STRETCH] = g.velocityStretchStrength.coerceIn(0.0f, 0.30f)
+            prefs[Keys.GLASS_HELD_RIM_ALPHA] = g.heldRimAlpha.coerceIn(0.0f, 1.0f)
+            prefs[Keys.GLASS_TAP_GLIDE_MS] = g.tapGlideDurationMs.coerceIn(120, 650)
+            prefs[Keys.GLASS_DEPTH_EFFECT] = g.depthEffectEnabled
+            prefs[Keys.GLASS_VIBRANCY] = g.vibrancyEnabled
+            prefs[Keys.GLASS_SATURATION] = g.backdropSaturation.coerceIn(0.6f, 1.8f)
+            prefs[Keys.GLASS_BRIGHTNESS] = g.backdropBrightness.coerceIn(-0.25f, 0.25f)
+            prefs[Keys.GLASS_HIGHLIGHT_STYLE] = g.highlightStyle.name
+            prefs[Keys.GLASS_ACCENT_MODE] = g.accentMode.name
+            prefs[Keys.GLASS_DETACHED_SEARCH_ORB] = g.detachedSearchOrb
+            prefs[Keys.GLASS_MINI_PLAYER_REFRACTION_BOOST] = g.miniPlayerRefractionBoost.coerceIn(0.5f, 1.8f)
 
             prefs[Keys.EQ_PRESET] = updated.eqPreset.name
             prefs[Keys.EQ_BANDS] = updated.eqBandLevelsDb.joinToString(",")
@@ -404,6 +448,12 @@ class PreferencesRepository(private val context: Context) : AuthRepository {
             .getOrDefault(GlassQualityTier.ULTRA_AGSL)
         val opticalPreset = runCatching { GlassOpticalPreset.valueOf(prefs[Keys.GLASS_OPTICAL_PRESET] ?: "") }
             .getOrDefault(GlassOpticalPreset.BALANCED_IOS26)
+        val highlightStyle = runCatching {
+            GlassHighlightStyle.valueOf(prefs[Keys.GLASS_HIGHLIGHT_STYLE] ?: "")
+        }.getOrDefault(opticalPreset.highlightStyle)
+        val accentMode = runCatching {
+            GlassAccentMode.valueOf(prefs[Keys.GLASS_ACCENT_MODE] ?: "")
+        }.getOrDefault(opticalPreset.accentMode)
         val glassConfig = LiquidGlassConfig(
             opticalPreset = opticalPreset,
             pillScale = prefs[Keys.GLASS_PILL_SCALE] ?: opticalPreset.pillScale,
@@ -412,7 +462,28 @@ class PreferencesRepository(private val context: Context) : AuthRepository {
             refractionHeightDp = prefs[Keys.GLASS_REFRACTION_HEIGHT] ?: opticalPreset.refractionHeightDp,
             refractionAmountDp = prefs[Keys.GLASS_REFRACTION_AMOUNT] ?: opticalPreset.refractionAmountDp,
             blurRadiusDp = prefs[Keys.GLASS_BLUR_RADIUS] ?: opticalPreset.blurRadiusDp,
-            chromaticAberration = prefs[Keys.GLASS_CHROMATIC] ?: opticalPreset.chromaticAberration
+            alwaysShowLensAtRest = prefs[Keys.GLASS_ALWAYS_LENS_AT_REST] ?: opticalPreset.alwaysShowLensAtRest,
+            idleTintAlpha = prefs[Keys.GLASS_IDLE_TINT_ALPHA] ?: opticalPreset.idleTintAlpha,
+            restingPillAlpha = prefs[Keys.GLASS_RESTING_PILL_ALPHA] ?: opticalPreset.restingPillAlpha,
+            rimHighlightAlpha = prefs[Keys.GLASS_RIM_HIGHLIGHT_ALPHA] ?: opticalPreset.rimHighlightAlpha,
+            heldRefractionHeightDp = prefs[Keys.GLASS_HELD_REFRACTION_HEIGHT] ?: opticalPreset.heldRefractionHeightDp,
+            heldRefractionAmountDp = prefs[Keys.GLASS_HELD_REFRACTION_AMOUNT] ?: opticalPreset.heldRefractionAmountDp,
+            heldBlurRadiusDp = prefs[Keys.GLASS_HELD_BLUR_RADIUS] ?: opticalPreset.heldBlurRadiusDp,
+            heldTintAlpha = prefs[Keys.GLASS_HELD_TINT_ALPHA] ?: opticalPreset.heldTintAlpha,
+            heldScaleX = prefs[Keys.GLASS_HELD_SCALE_X] ?: opticalPreset.heldScaleX,
+            heldScaleY = prefs[Keys.GLASS_HELD_SCALE_Y] ?: opticalPreset.heldScaleY,
+            velocityStretchStrength = prefs[Keys.GLASS_VELOCITY_STRETCH] ?: opticalPreset.velocityStretchStrength,
+            heldRimAlpha = prefs[Keys.GLASS_HELD_RIM_ALPHA] ?: opticalPreset.heldRimAlpha,
+            tapGlideDurationMs = prefs[Keys.GLASS_TAP_GLIDE_MS] ?: opticalPreset.tapGlideDurationMs,
+            chromaticAberration = prefs[Keys.GLASS_CHROMATIC] ?: opticalPreset.chromaticAberration,
+            depthEffectEnabled = prefs[Keys.GLASS_DEPTH_EFFECT] ?: opticalPreset.depthEffectEnabled,
+            vibrancyEnabled = prefs[Keys.GLASS_VIBRANCY] ?: opticalPreset.vibrancyEnabled,
+            backdropSaturation = prefs[Keys.GLASS_SATURATION] ?: opticalPreset.backdropSaturation,
+            backdropBrightness = prefs[Keys.GLASS_BRIGHTNESS] ?: opticalPreset.backdropBrightness,
+            highlightStyle = highlightStyle,
+            accentMode = accentMode,
+            detachedSearchOrb = prefs[Keys.GLASS_DETACHED_SEARCH_ORB] ?: opticalPreset.detachedSearchOrb,
+            miniPlayerRefractionBoost = prefs[Keys.GLASS_MINI_PLAYER_REFRACTION_BOOST] ?: opticalPreset.miniPlayerRefractionBoost
         )
         val eqPreset = runCatching { EqPreset.valueOf(prefs[Keys.EQ_PRESET] ?: "") }
             .getOrDefault(EqPreset.STUDIO)

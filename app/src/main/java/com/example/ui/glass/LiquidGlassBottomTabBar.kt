@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.domain.model.GlassQualityTier
+import com.example.domain.model.LiquidGlassConfig
 import com.example.domain.model.MainTab
 import com.example.ui.theme.FrostWhite
 import com.example.ui.theme.LocalGlassQuality
@@ -82,9 +83,9 @@ import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.colorControls
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
-import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.Shadow
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -92,48 +93,52 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private val PrimaryDockTabs = listOf(
+private val SplitPrimaryTabs = listOf(
     MainTab.HOME,
     MainTab.LIBRARY,
     MainTab.SOUND_LAB,
     MainTab.PROFILE
 )
 
+private val UnifiedAllTabs = MainTab.entries.toList()
+
 /**
- * High-Refraction Apple iOS 26 Split Liquid Glass Dock powered by `io.github.kyant0:backdrop`.
+ * Authentic Kyant0/AndroidLiquidGlass (`LiquidBottomTabs`) + Apple iOS 26 Split Dock.
  *
- * Split Layout:
- * - **Left Floating Capsule (`weight(1f)`)**: 4 primary tabs (Home, Library, Sound Lab, Profile)
- *   rendered inside Smoked Obsidian Crystal glass with sculpted dual-edge Fresnel rims.
- * - **Right Detached Circular Orb**: Dedicated floating glass Search button (`MainTab.SEARCH`)
- *   with high-stiffness spring compression and album-art dynamic accent glow.
- *
- * On-Demand Two-Layer Optical Architecture (Zero Idle Offscreen Capture):
- * - **Layer 1 (Smoked Obsidian Dock + Resting Capsule + Icons/Labels)**:
- *   Captured into `tabsBackdrop` strictly while dragging, pressing, or gliding between tabs.
- * - **Layer 2 (Unclipped Convex Crystal Droplet Lens — DRAWN ON TOP OF LAYER 1!)**:
- *   Appears exclusively on drag, press, or tap transition; swells proud of the dock bounds with
- *   zero internal blur, boosted curved-edge refraction, chromatic prism dispersion, bottom inner
- *   glass thickness bevel, and bright double-arc Fresnel specular highlights.
+ * Clean Three-Layer Optical Separation (prevents double-blurred muddiness & press flicker):
+ * - **Layer 1A (Dock Shell)**: Draws blurred smoked glass from `sceneBackdrop`. NOT captured into `tabsBackdrop`.
+ * - **Layer 1B (Transparent Tab Content Layer)**: Always stably attached to `Modifier.layerBackdrop(tabsBackdrop)`
+ *   with a 100% transparent background containing the resting highlight pill and crisp tab icons/labels.
+ * - **Layer 2 (Unclipped Crystal Droplet Lens — ON TOP OF LAYER 1B!)**:
+ *   Samples `rememberCombinedBackdrop(sceneBackdrop, tabsBackdrop)` — compositing the SHARP live
+ *   background scene directly behind the SHARP transparent tab icons — then applies pure GPU
+ *   `vibrancy()` / `colorControls()` + non-tearing curved `lens()` + native Fresnel `Highlight`
+ *   with crystal-clear `onDrawSurface` (no muddy painted dark slabs or thick double strokes!).
  */
 @Composable
 fun LiquidGlassBottomTabBar(
     selectedTab: MainTab,
     onTabSelected: (MainTab) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    backdropOverride: Backdrop? = null,
+    configOverride: LiquidGlassConfig? = null,
+    applyNavigationBarsPadding: Boolean = true,
+    forceHoldPreview: Boolean = false,
+    previewTabsOverride: List<MainTab>? = null
 ) {
-    val primaryTabs = PrimaryDockTabs
+    val glassConfig = configOverride ?: LocalLiquidGlassConfig.current
+    val showDetachedSearch = previewTabsOverride == null && glassConfig.detachedSearchOrb
+    val primaryTabs = previewTabsOverride ?: if (showDetachedSearch) SplitPrimaryTabs else UnifiedAllTabs
     val tabCount = primaryTabs.size
-    val isSearchSelected = selectedTab == MainTab.SEARCH
+    val isSearchDetachedActive = showDetachedSearch && selectedTab == MainTab.SEARCH
     val selectedPrimaryIndex = primaryTabs.indexOf(selectedTab)
 
     val palette = LocalLiquidPalette.current
-    val activeAccent = remember(palette.primaryGlow) {
-        AppleGlassTokens.ensureVibrantOnDarkGlass(palette.primaryGlow)
+    val activeAccent = remember(palette.primaryGlow, glassConfig.accentMode) {
+        AppleGlassTokens.resolveAccent(palette.primaryGlow, glassConfig.accentMode)
     }
-    val glassConfig = LocalLiquidGlassConfig.current
     val glassTier = LocalGlassQuality.current
-    val sceneBackdrop = LocalLiquidBackdrop.current
+    val sceneBackdrop = backdropOverride ?: LocalLiquidBackdrop.current
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
@@ -146,39 +151,50 @@ fun LiquidGlassBottomTabBar(
     }
 
     var barWidthPx by remember { mutableFloatStateOf(0f) }
-    var isDragging by remember { mutableStateOf(false) }
+    var isHolding by remember { mutableStateOf(false) }
     var isTapGliding by remember { mutableStateOf(false) }
     var tapGlideJob by remember { mutableStateOf<Job?>(null) }
+    var holdActivateJob by remember { mutableStateOf<Job?>(null) }
     var dragVelocityX by remember { mutableFloatStateOf(0f) }
     var lastHapticIndex by remember { mutableIntStateOf(selectedPrimaryIndex.coerceAtLeast(0)) }
-    var wasOnSearch by remember { mutableStateOf(isSearchSelected) }
+    var wasOnDetachedSearch by remember { mutableStateOf(isSearchDetachedActive) }
 
     val currentPrimaryIndex by rememberUpdatedState(selectedPrimaryIndex)
-    val currentIsSearchSelected by rememberUpdatedState(isSearchSelected)
+    val currentIsDetachedSearch by rememberUpdatedState(isSearchDetachedActive)
     val currentOnTabSelected by rememberUpdatedState(onTabSelected)
+    val currentPrimaryTabs by rememberUpdatedState(primaryTabs)
+    val currentConfig by rememberUpdatedState(glassConfig)
 
-    fun triggerTapGlide(durationMs: Long = 380L) {
+    fun triggerTapGlide(durationMs: Long = currentConfig.tapGlideDurationMs.toLong()) {
         tapGlideJob?.cancel()
         isTapGliding = true
         tapGlideJob = scope.launch {
-            delay(durationMs)
+            delay(durationMs.coerceIn(100L, 700L))
             isTapGliding = false
         }
     }
 
     val lensPosition = remember { Animatable(selectedPrimaryIndex.coerceAtLeast(0).toFloat()) }
 
-    LaunchedEffect(selectedTab, glassConfig.springStiffness, glassConfig.springDamping) {
-        val prevWasSearch = wasOnSearch
-        wasOnSearch = isSearchSelected
-        if (selectedPrimaryIndex >= 0 && !isDragging) {
+    // Keep lens index in bounds if user toggles 4-tab split vs 5-tab unified dock live in Settings
+    LaunchedEffect(tabCount) {
+        val clamped = lensPosition.value.coerceIn(0f, (tabCount - 1).coerceAtLeast(0).toFloat())
+        if (abs(lensPosition.value - clamped) > 0.01f) {
+            lensPosition.snapTo(clamped)
+        }
+    }
+
+    LaunchedEffect(selectedTab, tabCount, glassConfig.springStiffness, glassConfig.springDamping) {
+        val prevWasSearch = wasOnDetachedSearch
+        wasOnDetachedSearch = isSearchDetachedActive
+        if (selectedPrimaryIndex >= 0 && !isHolding) {
             val target = selectedPrimaryIndex.toFloat()
             if (prevWasSearch) {
                 lensPosition.snapTo(target)
-                triggerTapGlide(durationMs = 260L)
+                triggerTapGlide(durationMs = (glassConfig.tapGlideDurationMs * 0.75f).roundToInt().toLong())
             } else {
                 if (abs(lensPosition.value - target) > 0.05f) {
-                    triggerTapGlide(durationMs = 380L)
+                    triggerTapGlide()
                 }
                 lensPosition.animateTo(
                     targetValue = target,
@@ -192,18 +208,29 @@ fun LiquidGlassBottomTabBar(
         }
     }
 
-    val isLensActive = isDragging || isTapGliding
-    val dropletMorph by animateFloatAsState(
-        targetValue = if (isLensActive) 1f else 0f,
+    val isInteracting = isHolding || isTapGliding || forceHoldPreview
+    val isLensVisibleTarget = isInteracting || (glassConfig.alwaysShowLensAtRest && !isSearchDetachedActive)
+
+    val dropletVisibility by animateFloatAsState(
+        targetValue = if (isLensVisibleTarget) 1f else 0f,
         animationSpec = spring(
-            dampingRatio = (glassConfig.springDamping + 0.04f).coerceIn(0.60f, 0.84f),
-            stiffness = (glassConfig.springStiffness * 1.18f).coerceAtLeast(520f)
+            dampingRatio = (glassConfig.springDamping + 0.06f).coerceIn(0.62f, 0.88f),
+            stiffness = (glassConfig.springStiffness * 1.15f).coerceAtLeast(480f)
         ),
-        label = "dropletMorph"
+        label = "dropletVisibility"
+    )
+
+    val holdMorph by animateFloatAsState(
+        targetValue = if (isInteracting) 1f else 0f,
+        animationSpec = spring(
+            dampingRatio = glassConfig.springDamping.coerceIn(0.45f, 0.90f),
+            stiffness = (glassConfig.springStiffness * 1.12f).coerceAtLeast(420f)
+        ),
+        label = "holdMorph"
     )
 
     val restingPresence by animateFloatAsState(
-        targetValue = if (isSearchSelected) 0f else 1f,
+        targetValue = if (isSearchDetachedActive) 0f else 1f,
         animationSpec = spring(
             dampingRatio = 0.82f,
             stiffness = 620f
@@ -212,20 +239,20 @@ fun LiquidGlassBottomTabBar(
     )
 
     val stretchFactor by animateFloatAsState(
-        targetValue = if (isDragging) {
+        targetValue = if (isHolding) {
             (abs(dragVelocityX) / 2000f).coerceIn(0f, 1f)
         } else {
-            (abs(lensPosition.velocity) / 13f).coerceIn(0f, 0.78f)
+            (abs(lensPosition.velocity) / 14f).coerceIn(0f, 0.72f)
         },
         animationSpec = spring(
-            dampingRatio = 0.70f,
-            stiffness = 600f
+            dampingRatio = 0.68f,
+            stiffness = 580f
         ),
         label = "liquidStretch"
     )
 
-    val pillScale = glassConfig.pillScale
-    val dockHeightDp = (64f + 4f * (pillScale - 1f)).coerceIn(60f, 70f).dp
+    val pillScale = glassConfig.pillScale.coerceIn(0.85f, 1.25f)
+    val dockHeightDp = (64f + 6f * (pillScale - 1f)).coerceIn(58f, 72f).dp
     val horizontalDockPadding = 4.dp
 
     val useRealDockBackdrop = sceneBackdrop != null &&
@@ -234,25 +261,29 @@ fun LiquidGlassBottomTabBar(
     val useRealLensDroplet = glassTier != GlassQualityTier.BATTERY_SAVER &&
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
 
-    // Outer unclipped host: vertical padding leaves clear headroom for the crystal droplet to swell proud!
+    val outerModifier = modifier
+        .fillMaxWidth()
+        .then(if (applyNavigationBarsPadding) Modifier.navigationBarsPadding() else Modifier)
+        .padding(
+            horizontal = if (previewTabsOverride != null) 8.dp else 16.dp,
+            vertical = if (previewTabsOverride != null) 8.dp else 10.dp
+        )
+
     Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+        modifier = outerModifier,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // =========================================================================
-        // LEFT SPLIT DOCK: 4-Tab Smoked Obsidian Crystal Capsule + On-Demand Droplet
+        // MAIN FLOATING GLASS DOCK (4-Tab Split Pill OR 5-Tab Unified Pill)
         // =========================================================================
         Box(
             modifier = Modifier
                 .weight(1f)
                 .height(dockHeightDp)
-                .testTag("liquid_bottom_tab_bar")
+                .then(if (previewTabsOverride == null) Modifier.testTag("liquid_bottom_tab_bar") else Modifier)
                 .onSizeChanged { barWidthPx = it.width.toFloat() }
-                .pointerInput(tabCount, glassConfig.springStiffness, glassConfig.springDamping) {
+                .pointerInput(tabCount) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         if (barWidthPx <= 0f) return@awaitEachGesture
@@ -267,11 +298,25 @@ fun LiquidGlassBottomTabBar(
                         val startX = down.position.x
                         val downTabIdx = ((startX - padPx) / tabWidth).toInt().coerceIn(0, tabCount - 1)
                         tapGlideJob?.cancel()
+                        holdActivateJob?.cancel()
                         isTapGliding = false
 
-                        // Swell the crystal droplet immediately when pressing the active primary tab
-                        if (!currentIsSearchSelected && downTabIdx == currentPrimaryIndex) {
-                            isDragging = true
+                        // Immediate droplet bloom when pressing the active tab;
+                        // smooth 60ms hold bloom when pressing and holding any other tab!
+                        if (!currentIsDetachedSearch && downTabIdx == currentPrimaryIndex) {
+                            isHolding = true
+                        } else {
+                            holdActivateJob = scope.launch {
+                                delay(60L)
+                                isHolding = true
+                                lensPosition.animateTo(
+                                    targetValue = downTabIdx.toFloat(),
+                                    animationSpec = spring(
+                                        dampingRatio = currentConfig.springDamping,
+                                        stiffness = currentConfig.springStiffness
+                                    )
+                                )
+                            }
                         }
 
                         while (true) {
@@ -279,9 +324,10 @@ fun LiquidGlassBottomTabBar(
                             val change = event.changes.firstOrNull() ?: break
 
                             if (!change.pressed) {
+                                holdActivateJob?.cancel()
                                 val velX = velocityTracker.calculateVelocity().x
                                 dragVelocityX = 0f
-                                isDragging = false
+                                isHolding = false
 
                                 val adjustedX = (change.position.x - padPx).coerceIn(0f, innerWidth)
                                 val targetIdx = if (!movedSignificantly) {
@@ -291,16 +337,16 @@ fun LiquidGlassBottomTabBar(
                                     projected.roundToInt().coerceIn(0, tabCount - 1)
                                 }
 
-                                val chosenTab = primaryTabs[targetIdx]
+                                val chosenTab = currentPrimaryTabs[targetIdx]
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
 
-                                if (!movedSignificantly && currentIsSearchSelected) {
+                                if (!movedSignificantly && currentIsDetachedSearch) {
                                     scope.launch { lensPosition.snapTo(targetIdx.toFloat()) }
-                                    triggerTapGlide(durationMs = 260L)
+                                    triggerTapGlide(durationMs = (currentConfig.tapGlideDurationMs * 0.75f).roundToInt().toLong())
                                     currentOnTabSelected(chosenTab)
                                 } else {
-                                    if (abs(lensPosition.value - targetIdx.toFloat()) > 0.1f) {
-                                        triggerTapGlide(durationMs = 380L)
+                                    if (abs(lensPosition.value - targetIdx.toFloat()) > 0.08f) {
+                                        triggerTapGlide()
                                     }
                                     currentOnTabSelected(chosenTab)
                                     scope.launch {
@@ -308,8 +354,8 @@ fun LiquidGlassBottomTabBar(
                                             targetValue = targetIdx.toFloat(),
                                             initialVelocity = (velX / tabWidth).coerceIn(-14f, 14f),
                                             animationSpec = spring(
-                                                dampingRatio = glassConfig.springDamping,
-                                                stiffness = glassConfig.springStiffness
+                                                dampingRatio = currentConfig.springDamping,
+                                                stiffness = currentConfig.springStiffness
                                             )
                                         )
                                     }
@@ -319,9 +365,10 @@ fun LiquidGlassBottomTabBar(
 
                             velocityTracker.addPosition(change.uptimeMillis, change.position)
                             val dxFromStart = abs(change.position.x - startX)
-                            if (dxFromStart > 8f) {
+                            if (dxFromStart > 6f) {
+                                holdActivateJob?.cancel()
                                 movedSignificantly = true
-                                isDragging = true
+                                isHolding = true
                                 change.consume()
                             }
 
@@ -351,13 +398,10 @@ fun LiquidGlassBottomTabBar(
             val tabWidthPx = if (tabCount > 0) innerWidthPx / tabCount.toFloat() else 0f
 
             // =========================================================================
-            // LAYER 1: Smoked Obsidian Frosted 4-Tab Dock + Resting Pill + Icons/Labels
-            // Offscreen `tabsBackdrop` capture stays OFF at rest for 120fps scrolling!
+            // LAYER 1A: Smoked Obsidian Dock Shell (SEPARATED from `tabsBackdrop`!)
             // =========================================================================
-            val captureTabsForDroplet = useRealLensDroplet && (isLensActive || dropletMorph > 0.01f)
-            val dockModifier = Modifier
+            val dockShellModifier = Modifier
                 .fillMaxSize()
-                .then(if (captureTabsForDroplet) Modifier.layerBackdrop(tabsBackdrop) else Modifier)
                 .then(
                     if (useRealDockBackdrop && sceneBackdrop != null) {
                         val enableDockLens = glassTier == GlassQualityTier.ULTRA_AGSL &&
@@ -366,70 +410,81 @@ fun LiquidGlassBottomTabBar(
                             backdrop = sceneBackdrop,
                             shape = { CircleShape },
                             effects = {
-                                vibrancy()
-                                // Crisp low-radius blur keeps underlying album colors & cards vivid like the demo
-                                val dockBlur = (glassConfig.blurRadiusDp * 0.62f).coerceIn(3.5f, 10f)
-                                blur(dockBlur.dp.toPx())
-                                if (enableDockLens) {
+                                if (glassConfig.vibrancyEnabled) {
+                                    vibrancy()
+                                }
+                                if (abs(glassConfig.backdropSaturation - 1f) > 0.02f || abs(glassConfig.backdropBrightness) > 0.005f) {
+                                    colorControls(
+                                        brightness = glassConfig.backdropBrightness,
+                                        contrast = 1f,
+                                        saturation = glassConfig.backdropSaturation
+                                    )
+                                }
+                                if (glassConfig.blurRadiusDp > 0.35f) {
+                                    blur(glassConfig.blurRadiusDp.dp.toPx())
+                                }
+                                if (enableDockLens && glassConfig.refractionHeightDp > 0.25f && glassConfig.refractionAmountDp > 0.25f) {
+                                    val maxH = (size.height * 0.42f).coerceAtLeast(1f)
+                                    val maxAmt = (size.height * 0.85f).coerceAtLeast(1f)
                                     lens(
-                                        refractionHeight = (glassConfig.refractionHeightDp * 1.05f).dp.toPx(),
-                                        refractionAmount = (glassConfig.refractionAmountDp * 1.05f).dp.toPx(),
-                                        depthEffect = true,
+                                        refractionHeight = glassConfig.refractionHeightDp.dp.toPx().coerceIn(0.5f, maxH),
+                                        refractionAmount = glassConfig.refractionAmountDp.dp.toPx().coerceIn(0.5f, maxAmt),
+                                        depthEffect = glassConfig.depthEffectEnabled,
                                         chromaticAberration = false
                                     )
                                 }
                             },
-                            highlight = { Highlight.Default },
+                            highlight = { AppleGlassTokens.resolveHighlight(glassConfig.highlightStyle) },
                             shadow = { Shadow.Default },
                             onDrawSurface = {
-                                drawRect(AppleGlassTokens.SmokedCrystalBase.copy(alpha = 0.29f))
-                                // Convex top glass sheen + subtle bottom internal thickness shadow
-                                drawRect(
-                                    brush = Brush.verticalGradient(
-                                        colorStops = arrayOf(
-                                            0.0f to Color.White.copy(alpha = 0.14f),
-                                            0.28f to Color.White.copy(alpha = 0.02f),
-                                            0.74f to Color.Transparent,
-                                            1.0f to AppleGlassTokens.SmokedCrystalInnerShadow.copy(alpha = 0.30f)
+                                val tintAlpha = glassConfig.idleTintAlpha.coerceIn(0f, 0.65f)
+                                if (tintAlpha > 0.005f) {
+                                    drawRect(AppleGlassTokens.SmokedCrystalBase.copy(alpha = tintAlpha))
+                                }
+                                val rim = glassConfig.rimHighlightAlpha.coerceIn(0f, 1f)
+                                if (rim > 0.01f) {
+                                    drawRect(
+                                        brush = Brush.verticalGradient(
+                                            colorStops = arrayOf(
+                                                0.0f to Color.White.copy(alpha = 0.10f * rim),
+                                                0.28f to Color.Transparent,
+                                                0.82f to Color.Transparent,
+                                                1.0f to AppleGlassTokens.SmokedCrystalInnerShadow.copy(alpha = 0.20f * rim)
+                                            )
                                         )
                                     )
-                                )
-                                // Crisp dual-edge Fresnel glass rim
-                                val radiusPx = size.height / 2f
-                                drawRoundRect(
-                                    brush = Brush.verticalGradient(
-                                        colorStops = arrayOf(
-                                            0.0f to Color.White.copy(alpha = 0.46f),
-                                            0.38f to Color.White.copy(alpha = 0.08f),
-                                            0.72f to Color.White.copy(alpha = 0.08f),
-                                            1.0f to Color.White.copy(alpha = 0.28f)
-                                        )
-                                    ),
-                                    cornerRadius = CornerRadius(radiusPx, radiusPx),
-                                    style = Stroke(width = 0.9.dp.toPx())
-                                )
+                                    val rPx = size.height / 2f
+                                    drawRoundRect(
+                                        brush = Brush.verticalGradient(
+                                            colorStops = arrayOf(
+                                                0.0f to Color.White.copy(alpha = 0.36f * rim),
+                                                0.38f to Color.Transparent,
+                                                0.76f to Color.Transparent,
+                                                1.0f to Color.White.copy(alpha = 0.22f * rim)
+                                            )
+                                        ),
+                                        cornerRadius = CornerRadius(rPx, rPx),
+                                        style = Stroke(width = 0.75.dp.toPx())
+                                    )
+                                }
                             }
                         )
                     } else {
+                        val rim = glassConfig.rimHighlightAlpha.coerceIn(0f, 1f)
                         Modifier
                             .clip(CircleShape)
                             .background(
-                                Brush.verticalGradient(
-                                    colorStops = arrayOf(
-                                        0.0f to AppleGlassTokens.SmokedCrystalBase.copy(alpha = 0.86f),
-                                        0.75f to AppleGlassTokens.SmokedCrystalBase.copy(alpha = 0.82f),
-                                        1.0f to AppleGlassTokens.SmokedCrystalInnerShadow.copy(alpha = 0.92f)
-                                    )
+                                AppleGlassTokens.SmokedCrystalBase.copy(
+                                    alpha = (glassConfig.idleTintAlpha + 0.56f).coerceIn(0.68f, 0.90f)
                                 )
                             )
                             .border(
-                                width = 0.9.dp,
+                                width = 0.85.dp,
                                 brush = Brush.verticalGradient(
                                     colorStops = arrayOf(
-                                        0.0f to Color.White.copy(alpha = 0.44f),
-                                        0.40f to Color.White.copy(alpha = 0.08f),
-                                        0.74f to Color.White.copy(alpha = 0.10f),
-                                        1.0f to Color.White.copy(alpha = 0.26f)
+                                        0.0f to Color.White.copy(alpha = 0.44f * rim),
+                                        0.40f to Color.White.copy(alpha = 0.08f * rim),
+                                        1.0f to Color.White.copy(alpha = 0.24f * rim)
                                     )
                                 ),
                                 shape = CircleShape
@@ -437,17 +492,27 @@ fun LiquidGlassBottomTabBar(
                     }
                 )
 
+            Box(modifier = dockShellModifier)
+
+            // =========================================================================
+            // LAYER 1B: Transparent Tab Content Layer — STABLY attached to `tabsBackdrop`
+            // Because background is transparent, `combinedPillBackdrop` feeds SHARP scene
+            // + SHARP tab icons into Layer 2's crystal droplet with ZERO blur muddiness!
+            // =========================================================================
             Box(
-                modifier = dockModifier.padding(horizontal = horizontalDockPadding),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (useRealLensDroplet) Modifier.layerBackdrop(tabsBackdrop) else Modifier)
+                    .padding(horizontal = horizontalDockPadding),
                 contentAlignment = Alignment.CenterStart
             ) {
-                // Sleek frosted resting capsule behind the active primary tab
-                // Fades smoothly out whenever the Search orb is active OR while the crystal droplet is morphed
-                if (tabWidthPx > 0f) {
-                    val restingAlpha = ((1f - dropletMorph) * restingPresence).coerceIn(0f, 1f)
+                // Sleek translucent resting capsule (fades cleanly to 0 when droplet rises OR Search is active)
+                if (tabWidthPx > 0f && glassConfig.restingPillAlpha > 0.005f) {
+                    val restingAlpha = ((1f - dropletVisibility) * restingPresence).coerceIn(0f, 1f)
                     if (restingAlpha > 0.01f) {
                         val restingWidthDp = with(density) { tabWidthPx.toDp() }
-                        val restingHeightDp = (dockHeightDp - 8.dp).coerceAtLeast(48.dp)
+                        val restingHeightDp = (dockHeightDp - 8.dp).coerceAtLeast(46.dp)
+                        val baseAlpha = glassConfig.restingPillAlpha.coerceIn(0f, 0.45f)
                         Box(
                             modifier = Modifier
                                 .width(restingWidthDp)
@@ -460,19 +525,19 @@ fun LiquidGlassBottomTabBar(
                                 .background(
                                     Brush.verticalGradient(
                                         colorStops = arrayOf(
-                                            0.0f to Color.White.copy(alpha = 0.17f),
-                                            0.55f to activeAccent.copy(alpha = 0.10f),
-                                            1.0f to Color.White.copy(alpha = 0.06f)
+                                            0.0f to Color.White.copy(alpha = (baseAlpha * 1.15f).coerceAtMost(0.45f)),
+                                            0.55f to activeAccent.copy(alpha = (baseAlpha * 0.45f).coerceAtMost(0.24f)),
+                                            1.0f to Color.White.copy(alpha = (baseAlpha * 0.40f).coerceAtMost(0.22f))
                                         )
                                     )
                                 )
                                 .border(
-                                    width = 0.75.dp,
+                                    width = 0.65.dp,
                                     brush = Brush.verticalGradient(
                                         colorStops = arrayOf(
-                                            0.0f to Color.White.copy(alpha = 0.44f),
-                                            0.45f to activeAccent.copy(alpha = 0.18f),
-                                            1.0f to Color.White.copy(alpha = 0.24f)
+                                            0.0f to Color.White.copy(alpha = (baseAlpha * 2.2f).coerceAtMost(0.42f)),
+                                            0.50f to Color.Transparent,
+                                            1.0f to Color.White.copy(alpha = (baseAlpha * 1.2f).coerceAtMost(0.24f))
                                         )
                                     ),
                                     shape = CircleShape
@@ -481,7 +546,7 @@ fun LiquidGlassBottomTabBar(
                     }
                 }
 
-                // 4 Crisp Primary Tab Icons & Labels
+                // Crisp Tab Icons & Labels
                 Row(
                     modifier = Modifier.fillMaxSize(),
                     verticalAlignment = Alignment.CenterVertically
@@ -490,7 +555,7 @@ fun LiquidGlassBottomTabBar(
                         val distance = abs(lensPosition.value - index.toFloat()).coerceIn(0f, 1f)
                         val proximity = 1f - distance
                         val isSelected = selectedTab == tab
-                        val isHighlighted = if (isSearchSelected && !isLensActive) {
+                        val isHighlighted = if (isSearchDetachedActive && !isInteracting) {
                             false
                         } else {
                             proximity > 0.45f
@@ -501,7 +566,13 @@ fun LiquidGlassBottomTabBar(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
-                                .testTag("tab_${tab.name.lowercase()}"),
+                                .then(
+                                    if (previewTabsOverride == null) {
+                                        Modifier.testTag("tab_${tab.name.lowercase()}")
+                                    } else {
+                                        Modifier
+                                    }
+                                ),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
                         ) {
@@ -513,12 +584,18 @@ fun LiquidGlassBottomTabBar(
                                 } else {
                                     FrostWhite.copy(alpha = 0.90f)
                                 },
-                                modifier = Modifier.size(23.dp)
+                                modifier = Modifier
+                                    .size(if (tabCount <= 4) 23.dp else 21.dp)
+                                    .graphicsLayer {
+                                        val s = 1f + 0.05f * proximity * holdMorph
+                                        scaleX = s
+                                        scaleY = s
+                                    }
                             )
                             Text(
                                 text = tab.label,
                                 style = MaterialTheme.typography.labelSmall.copy(
-                                    fontSize = 10.sp,
+                                    fontSize = if (tabCount <= 4) 10.sp else 9.sp,
                                     fontWeight = if (isHighlighted) FontWeight.SemiBold else FontWeight.Medium
                                 ),
                                 color = if (isHighlighted) {
@@ -536,17 +613,24 @@ fun LiquidGlassBottomTabBar(
             }
 
             // =========================================================================
-            // LAYER 2 (DRAWN ON TOP OF LAYER 1, UNCLIPPED — ON-DEMAND ONLY!):
-            // High-Refraction Convex Crystal Droplet Lens matching the reference demo!
-            // Zero internal blur, strong curved-edge magnification, chromatic prism edge,
-            // physical bottom inner glass thickness shadow & bright double-arc Fresnel rim!
+            // LAYER 2 (UNCLIPPED PURE CRYSTAL GLASS DROPLET LENS — ON TOP OF LAYER 1B!)
+            // Authentic Kyant0 `LiquidBottomTabs` crystal lens:
+            // - Refracts SHARP `sceneBackdrop` + SHARP transparent `tabsBackdrop`
+            // - Clamped non-tearing `lens()` curves edges cleanly without inverting icons
+            // - Native AGSL Fresnel `Highlight` + `Shadow.Default` + ultra-clean surface!
             // =========================================================================
-            if (tabWidthPx > 0f && dropletMorph > 0.01f) {
-                val dropletWidthPx = (tabWidthPx * (1.06f * pillScale))
-                    .coerceIn(tabWidthPx * 0.92f, tabWidthPx * 1.24f)
+            if (tabWidthPx > 0f && dropletVisibility > 0.01f) {
+                val dropletWidthPx = (tabWidthPx * (1.02f * pillScale))
+                    .coerceIn(tabWidthPx * 0.90f, tabWidthPx * 1.22f)
                 val dropletWidthDp = with(density) { dropletWidthPx.toDp() }
-                val dropletHeightDp = (dockHeightDp - 2.dp).coerceAtLeast(56.dp)
+                val dropletHeightDp = (dockHeightDp - 4.dp).coerceAtLeast(52.dp)
                 val dropletStartOffsetPx = padPx + (tabWidthPx - dropletWidthPx) * 0.5f
+
+                val restSwellX = 1.03f
+                val restSwellY = 1.07f
+                val targetHoldX = glassConfig.heldScaleX.coerceIn(1.0f, 1.32f)
+                val targetHoldY = glassConfig.heldScaleY.coerceIn(1.0f, 1.38f)
+                val stretchGain = glassConfig.velocityStretchStrength.coerceIn(0f, 0.30f)
 
                 if (useRealLensDroplet) {
                     Box(
@@ -559,54 +643,70 @@ fun LiquidGlassBottomTabBar(
                                 shape = { CircleShape },
                                 layerBlock = {
                                     translationX = dropletStartOffsetPx + lensPosition.value * tabWidthPx
-                                    // Swells vertically & horizontally proud of the dock bounds like the demo!
-                                    val sx = 1f + 0.14f * dropletMorph + 0.16f * stretchFactor
-                                    val sy = 1f + 0.24f * dropletMorph - 0.08f * stretchFactor
-                                    scaleX = sx.coerceIn(0.96f, 1.36f)
-                                    scaleY = sy.coerceIn(0.96f, 1.32f)
-                                    alpha = (dropletMorph * 1.18f).coerceIn(0f, 1f)
+                                    val baseX = restSwellX + (targetHoldX - restSwellX) * holdMorph
+                                    val baseY = restSwellY + (targetHoldY - restSwellY) * holdMorph
+                                    val sx = baseX + (stretchFactor * stretchGain)
+                                    val sy = baseY - (stretchFactor * stretchGain * 0.45f)
+                                    scaleX = sx.coerceIn(0.96f, 1.42f)
+                                    scaleY = sy.coerceIn(0.96f, 1.42f)
+                                    alpha = dropletVisibility.coerceIn(0f, 1f)
                                 },
                                 effects = {
-                                    vibrancy()
-                                    // Zero blur inside the crystal droplet: razor-sharp optical magnification!
+                                    if (glassConfig.vibrancyEnabled) {
+                                        vibrancy()
+                                    }
+                                    if (abs(glassConfig.backdropSaturation - 1f) > 0.02f || abs(glassConfig.backdropBrightness) > 0.005f) {
+                                        colorControls(
+                                            brightness = glassConfig.backdropBrightness,
+                                            contrast = 1f,
+                                            saturation = glassConfig.backdropSaturation
+                                        )
+                                    }
+                                    if (glassConfig.heldBlurRadiusDp > 0.35f) {
+                                        blur(glassConfig.heldBlurRadiusDp.dp.toPx())
+                                    }
+                                    // Safely clamped optical refraction: bends glass edges dramatically while
+                                    // keeping the center icon crisp, magnified, and never inverted/torn!
+                                    val maxH = (size.height * 0.42f).coerceAtLeast(1f)
+                                    val maxAmt = (size.height * 0.85f).coerceAtLeast(1f)
+                                    val morphBoost = 0.84f + 0.16f * holdMorph
+                                    val safeH = (glassConfig.heldRefractionHeightDp * morphBoost)
+                                        .dp.toPx().coerceIn(0.5f, maxH)
+                                    val safeAmt = (glassConfig.heldRefractionAmountDp * morphBoost)
+                                        .dp.toPx().coerceIn(0.5f, maxAmt)
                                     lens(
-                                        refractionHeight = (glassConfig.refractionHeightDp * (1.28f + 0.56f * dropletMorph)).dp.toPx(),
-                                        refractionAmount = (glassConfig.refractionAmountDp * (1.48f + 0.76f * dropletMorph)).dp.toPx(),
-                                        depthEffect = true,
-                                        chromaticAberration = glassConfig.chromaticAberration || glassTier == GlassQualityTier.ULTRA_AGSL
+                                        refractionHeight = safeH,
+                                        refractionAmount = safeAmt,
+                                        depthEffect = glassConfig.depthEffectEnabled,
+                                        chromaticAberration = glassConfig.chromaticAberration
                                     )
                                 },
-                                highlight = { Highlight.Default },
+                                highlight = { AppleGlassTokens.resolveHighlight(glassConfig.highlightStyle) },
                                 shadow = { Shadow.Default },
                                 onDrawSurface = {
-                                    val m = dropletMorph.coerceIn(0f, 1f)
-                                    val radiusPx = size.height / 2f
-                                    // Sculpted 3D molded glass interior: bright top crown, crystal clear center,
-                                    // and dark internal lower bevel thickness shadow matching the demo droplet!
-                                    drawRect(
-                                        brush = Brush.verticalGradient(
-                                            colorStops = arrayOf(
-                                                0.0f to Color.White.copy(alpha = 0.18f * m),
-                                                0.24f to Color.White.copy(alpha = 0.03f * m),
-                                                0.55f to activeAccent.copy(alpha = 0.07f * m),
-                                                0.78f to Color.Transparent,
-                                                1.0f to AppleGlassTokens.SmokedCrystalInnerShadow.copy(alpha = 0.36f * m)
-                                            )
+                                    val vis = dropletVisibility.coerceIn(0f, 1f)
+                                    // Pure crystal clear glass interior — never muddies the refracted icon!
+                                    val tint = glassConfig.heldTintAlpha.coerceIn(0f, 0.35f)
+                                    if (tint > 0.004f) {
+                                        drawRect(Color.White.copy(alpha = tint * vis))
+                                    }
+                                    // Optional delicate Fresnel arc controlled cleanly by user's Held Rim slider
+                                    val heldRim = glassConfig.heldRimAlpha.coerceIn(0f, 1f)
+                                    if (heldRim > 0.01f) {
+                                        val rPx = size.height / 2f
+                                        drawRoundRect(
+                                            brush = Brush.verticalGradient(
+                                                colorStops = arrayOf(
+                                                    0.0f to Color.White.copy(alpha = 0.45f * heldRim * vis),
+                                                    0.30f to Color.Transparent,
+                                                    0.74f to Color.Transparent,
+                                                    1.0f to Color.White.copy(alpha = 0.28f * heldRim * vis)
+                                                )
+                                            ),
+                                            cornerRadius = CornerRadius(rPx, rPx),
+                                            style = Stroke(width = 0.85.dp.toPx())
                                         )
-                                    )
-                                    // Razor-crisp bright double-arc Fresnel specular rim
-                                    drawRoundRect(
-                                        brush = Brush.verticalGradient(
-                                            colorStops = arrayOf(
-                                                0.0f to Color.White.copy(alpha = 0.90f * m),
-                                                0.30f to Color.White.copy(alpha = 0.18f * m),
-                                                0.68f to Color.White.copy(alpha = 0.14f * m),
-                                                1.0f to Color.White.copy(alpha = 0.66f * m)
-                                            )
-                                        ),
-                                        cornerRadius = CornerRadius(radiusPx, radiusPx),
-                                        style = Stroke(width = 1.35.dp.toPx())
-                                    )
+                                    }
                                 }
                             )
                     )
@@ -619,28 +719,21 @@ fun LiquidGlassBottomTabBar(
                             .height(dropletHeightDp)
                             .graphicsLayer {
                                 translationX = dropletStartOffsetPx + lensPosition.value * tabWidthPx
-                                scaleX = 1f + 0.14f * dropletMorph + 0.12f * stretchFactor
-                                scaleY = 1f + 0.20f * dropletMorph - 0.06f * stretchFactor
-                                alpha = dropletMorph
+                                val baseX = restSwellX + (targetHoldX - restSwellX) * holdMorph
+                                val baseY = restSwellY + (targetHoldY - restSwellY) * holdMorph
+                                scaleX = (baseX + stretchFactor * stretchGain).coerceIn(0.96f, 1.38f)
+                                scaleY = (baseY - stretchFactor * stretchGain * 0.4f).coerceIn(0.96f, 1.38f)
+                                alpha = dropletVisibility
                             }
                             .clip(CircleShape)
-                            .background(
-                                Brush.verticalGradient(
-                                    colorStops = arrayOf(
-                                        0.0f to Color.White.copy(alpha = 0.20f),
-                                        0.50f to activeAccent.copy(alpha = 0.10f),
-                                        1.0f to AppleGlassTokens.SmokedCrystalInnerShadow.copy(alpha = 0.34f)
-                                    )
-                                )
-                            )
+                            .background(Color.White.copy(alpha = (glassConfig.heldTintAlpha + 0.08f).coerceAtMost(0.30f)))
                             .border(
-                                width = 1.3.dp,
+                                width = 1.dp,
                                 brush = Brush.verticalGradient(
                                     colorStops = arrayOf(
-                                        0.0f to Color.White.copy(alpha = 0.88f),
-                                        0.36f to Color.White.copy(alpha = 0.18f),
-                                        0.72f to Color.White.copy(alpha = 0.14f),
-                                        1.0f to Color.White.copy(alpha = 0.64f)
+                                        0.0f to Color.White.copy(alpha = 0.72f),
+                                        0.40f to Color.White.copy(alpha = 0.14f),
+                                        1.0f to Color.White.copy(alpha = 0.48f)
                                     )
                                 ),
                                 shape = CircleShape
@@ -653,18 +746,21 @@ fun LiquidGlassBottomTabBar(
         // =========================================================================
         // RIGHT DETACHED FLOATING CIRCULAR GLASS ORB: Search Tab (`MainTab.SEARCH`)
         // =========================================================================
-        DetachedSearchOrb(
-            sizeDp = dockHeightDp,
-            isSelected = isSearchSelected,
-            activeAccent = activeAccent,
-            sceneBackdrop = sceneBackdrop,
-            useRealDockBackdrop = useRealDockBackdrop,
-            glassTier = glassTier,
-            onClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                currentOnTabSelected(MainTab.SEARCH)
-            }
-        )
+        if (showDetachedSearch) {
+            DetachedSearchOrb(
+                sizeDp = dockHeightDp,
+                isSelected = isSearchDetachedActive,
+                activeAccent = activeAccent,
+                sceneBackdrop = sceneBackdrop,
+                useRealDockBackdrop = useRealDockBackdrop,
+                glassTier = glassTier,
+                glassConfig = glassConfig,
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    currentOnTabSelected(MainTab.SEARCH)
+                }
+            )
+        }
     }
 }
 
@@ -676,9 +772,9 @@ private fun DetachedSearchOrb(
     sceneBackdrop: Backdrop?,
     useRealDockBackdrop: Boolean,
     glassTier: GlassQualityTier,
+    glassConfig: LiquidGlassConfig,
     onClick: () -> Unit
 ) {
-    val glassConfig = LocalLiquidGlassConfig.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
@@ -689,8 +785,8 @@ private fun DetachedSearchOrb(
             else -> 1f
         },
         animationSpec = spring(
-            dampingRatio = 0.56f,
-            stiffness = 700f
+            dampingRatio = glassConfig.springDamping.coerceIn(0.45f, 0.85f),
+            stiffness = (glassConfig.springStiffness * 1.25f).coerceAtLeast(520f)
         ),
         label = "searchOrbScale"
     )
@@ -719,86 +815,98 @@ private fun DetachedSearchOrb(
                     backdrop = sceneBackdrop,
                     shape = { CircleShape },
                     effects = {
-                        vibrancy()
-                        val orbBlur = if (isPressed) {
-                            2.5f
-                        } else {
-                            (glassConfig.blurRadiusDp * 0.62f).coerceIn(3.5f, 10f)
+                        if (glassConfig.vibrancyEnabled) {
+                            vibrancy()
                         }
-                        blur(orbBlur.dp.toPx())
-                        if (enableOrbLens) {
-                            val boost = if (isPressed) 1.48f else if (isSelected) 1.24f else 1.10f
-                            lens(
-                                refractionHeight = (glassConfig.refractionHeightDp * boost).dp.toPx(),
-                                refractionAmount = (glassConfig.refractionAmountDp * boost).dp.toPx(),
-                                depthEffect = true,
-                                chromaticAberration = isPressed || isSelected
+                        if (abs(glassConfig.backdropSaturation - 1f) > 0.02f || abs(glassConfig.backdropBrightness) > 0.005f) {
+                            colorControls(
+                                brightness = glassConfig.backdropBrightness,
+                                contrast = 1f,
+                                saturation = glassConfig.backdropSaturation
                             )
                         }
+                        val orbBlur = if (isPressed) {
+                            glassConfig.heldBlurRadiusDp
+                        } else {
+                            glassConfig.blurRadiusDp
+                        }
+                        if (orbBlur > 0.35f) {
+                            blur(orbBlur.dp.toPx())
+                        }
+                        if (enableOrbLens) {
+                            val maxH = (size.minDimension * 0.42f).coerceAtLeast(1f)
+                            val maxAmt = (size.minDimension * 0.85f).coerceAtLeast(1f)
+                            val hDp = if (isPressed) glassConfig.heldRefractionHeightDp else glassConfig.refractionHeightDp
+                            val aDp = if (isPressed) glassConfig.heldRefractionAmountDp else glassConfig.refractionAmountDp
+                            if (hDp > 0.25f && aDp > 0.25f) {
+                                lens(
+                                    refractionHeight = hDp.dp.toPx().coerceIn(0.5f, maxH),
+                                    refractionAmount = aDp.dp.toPx().coerceIn(0.5f, maxAmt),
+                                    depthEffect = glassConfig.depthEffectEnabled,
+                                    chromaticAberration = glassConfig.chromaticAberration && (isPressed || isSelected)
+                                )
+                            }
+                        }
                     },
-                    highlight = { Highlight.Default },
+                    highlight = { AppleGlassTokens.resolveHighlight(glassConfig.highlightStyle) },
                     shadow = { Shadow.Default },
                     onDrawSurface = {
                         val rPx = size.minDimension / 2f
-                        drawRect(AppleGlassTokens.SmokedCrystalBase.copy(alpha = if (isSelected) 0.25f else 0.30f))
+                        val tintAlpha = if (isPressed) {
+                            glassConfig.heldTintAlpha.coerceIn(0f, 0.35f)
+                        } else {
+                            glassConfig.idleTintAlpha.coerceIn(0f, 0.65f)
+                        }
+                        if (tintAlpha > 0.005f) {
+                            drawRect(AppleGlassTokens.SmokedCrystalBase.copy(alpha = tintAlpha))
+                        }
                         if (activeProgress > 0.01f) {
                             drawCircle(
                                 brush = Brush.radialGradient(
                                     colors = listOf(
-                                        activeAccent.copy(alpha = 0.28f * activeProgress),
-                                        activeAccent.copy(alpha = 0.08f * activeProgress),
+                                        activeAccent.copy(alpha = 0.24f * activeProgress),
+                                        activeAccent.copy(alpha = 0.06f * activeProgress),
                                         Color.Transparent
                                     ),
                                     center = Offset(size.width * 0.5f, size.height * 0.5f),
-                                    radius = rPx * 0.95f
+                                    radius = rPx * 0.92f
                                 )
                             )
                         }
-                        drawRect(
-                            brush = Brush.verticalGradient(
-                                colorStops = arrayOf(
-                                    0.0f to Color.White.copy(alpha = if (isPressed) 0.22f else 0.15f),
-                                    0.30f to Color.White.copy(alpha = 0.02f),
-                                    0.72f to Color.Transparent,
-                                    1.0f to AppleGlassTokens.SmokedCrystalInnerShadow.copy(alpha = 0.32f)
-                                )
+                        val rim = glassConfig.rimHighlightAlpha.coerceIn(0f, 1f)
+                        if (rim > 0.01f || isSelected) {
+                            val topRim = if (isSelected) activeAccent.copy(alpha = 0.65f) else Color.White.copy(alpha = 0.38f * rim)
+                            val bottomRim = if (isSelected) activeAccent.copy(alpha = 0.42f) else Color.White.copy(alpha = 0.22f * rim)
+                            drawCircle(
+                                brush = Brush.verticalGradient(
+                                    colorStops = arrayOf(
+                                        0.0f to topRim,
+                                        0.40f to Color.Transparent,
+                                        0.76f to Color.Transparent,
+                                        1.0f to bottomRim
+                                    )
+                                ),
+                                radius = rPx - 0.5.dp.toPx(),
+                                style = Stroke(width = if (isSelected || isPressed) 1.05.dp.toPx() else 0.75.dp.toPx())
                             )
-                        )
-                        val topRim = if (isSelected) activeAccent.copy(alpha = 0.72f) else Color.White.copy(alpha = 0.48f)
-                        val bottomRim = if (isSelected) activeAccent.copy(alpha = 0.48f) else Color.White.copy(alpha = 0.30f)
-                        drawCircle(
-                            brush = Brush.verticalGradient(
-                                colorStops = arrayOf(
-                                    0.0f to topRim,
-                                    0.40f to Color.White.copy(alpha = 0.10f),
-                                    0.72f to Color.White.copy(alpha = 0.10f),
-                                    1.0f to bottomRim
-                                )
-                            ),
-                            radius = rPx - 0.5.dp.toPx(),
-                            style = Stroke(width = if (isSelected || isPressed) 1.2.dp.toPx() else 0.95.dp.toPx())
-                        )
+                        }
                     }
                 )
             } else {
                 Modifier
                     .clip(CircleShape)
                     .background(
-                        Brush.verticalGradient(
-                            colorStops = arrayOf(
-                                0.0f to AppleGlassTokens.SmokedCrystalBase.copy(alpha = 0.88f),
-                                0.70f to if (isSelected) activeAccent.copy(alpha = 0.22f) else AppleGlassTokens.SmokedCrystalBase.copy(alpha = 0.84f),
-                                1.0f to AppleGlassTokens.SmokedCrystalInnerShadow.copy(alpha = 0.92f)
-                            )
+                        AppleGlassTokens.SmokedCrystalBase.copy(
+                            alpha = (glassConfig.idleTintAlpha + 0.56f).coerceIn(0.68f, 0.90f)
                         )
                     )
                     .border(
-                        width = if (isSelected) 1.2.dp else 0.95.dp,
+                        width = if (isSelected) 1.1.dp else 0.85.dp,
                         brush = Brush.verticalGradient(
                             colorStops = arrayOf(
-                                0.0f to if (isSelected) activeAccent.copy(alpha = 0.75f) else Color.White.copy(alpha = 0.46f),
-                                0.45f to Color.White.copy(alpha = 0.10f),
-                                1.0f to if (isSelected) activeAccent.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.28f)
+                                0.0f to if (isSelected) activeAccent.copy(alpha = 0.72f) else Color.White.copy(alpha = 0.42f),
+                                0.48f to Color.White.copy(alpha = 0.08f),
+                                1.0f to if (isSelected) activeAccent.copy(alpha = 0.42f) else Color.White.copy(alpha = 0.24f)
                             )
                         ),
                         shape = CircleShape

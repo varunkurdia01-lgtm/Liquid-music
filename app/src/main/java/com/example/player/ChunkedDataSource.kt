@@ -95,7 +95,6 @@ class ChunkedDataSource(
     private fun reportRefusal(spec: DataSpec, e: Exception) {
         if (e is HttpDataSource.InvalidResponseCodeException) {
             val url = spec.uri.toString()
-            InnerTubeXResolver.onRefused(url)
             LiquidAudioCache.onHttpRefusal(spec.key, url, e.responseCode)
         }
     }

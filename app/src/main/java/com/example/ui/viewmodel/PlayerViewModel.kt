@@ -9,7 +9,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.example.core.LiquidAppContainer
@@ -28,13 +30,16 @@ import com.example.domain.model.SavedQueueCursor
 import com.example.domain.model.SleepTimerOption
 import com.example.domain.model.SoundLabSettings
 import com.example.domain.model.SourceType
+import com.example.domain.model.StreamResolution
 import com.example.domain.model.Track
 import com.example.domain.model.TrackDnaInfo
+import com.example.player.LIQUID_RESOLVE_SCHEME
 import com.example.player.LiquidAudioCache
 import com.example.player.LiquidPlaybackService
 import com.example.player.PlaybackDspBridge
 import com.example.ui.theme.LiquidDynamicPalette
 import com.google.common.util.concurrent.ListenableFuture
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,6 +52,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val TAG = "PlayerViewModel"
 
@@ -107,6 +113,7 @@ class PlayerViewModel(
     private var dnaJob: Job? = null
     private var persistQueueJob: Job? = null
     private var preloadNextJob: Job? = null
+    private var resolvePlayJob: Job? = null
     private var hasAttemptedQueueRestore: Boolean = false
 
     private var pendingQueue: Pair<List<Track>, Int>? = null
@@ -151,8 +158,11 @@ class PlayerViewModel(
             }
             if (idx in queue.indices) {
                 val track = queue[idx]
-                commitListeningEventIfQualified()
-                onActiveTrackChanged(track, idx)
+                val alreadyActive = _uiState.value.currentTrack?.id == track.id && _uiState.value.currentIndex == idx
+                if (!alreadyActive) {
+                    commitListeningEventIfQualified()
+                    onActiveTrackChanged(track, idx)
+                }
                 maybeAppendEndlessRadio(idx, queue)
             }
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO &&
@@ -176,6 +186,7 @@ class PlayerViewModel(
             _uiState.update { it.copy(repeatMode = mapped) }
         }
 
+        @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
             val state = _uiState.value
             val activeTrack = state.currentTrack
@@ -231,57 +242,98 @@ class PlayerViewModel(
                 return
             }
 
-            Log.e(TAG, "ExoPlayer playback error: ${error.errorCodeName}", error)
+            val httpErr = generateSequence<Throwable>(error) { it.cause }
+                .filterIsInstance<HttpDataSource.InvalidResponseCodeException>()
+                .firstOrNull()
+            val statusCode = httpErr?.responseCode ?: 0
+            val failedUrl = httpErr?.dataSpec?.uri?.toString()
+                ?: ctrl?.currentMediaItem?.localConfiguration?.uri?.toString()
+            val lastResForTrack = LiquidAudioCache.lastResolution.value
+                ?.takeIf { it.first == activeTrack?.id }
+                ?.second
 
-            // Echo Music automatic HTTP 403 / stream recovery: invalidate refused client + evict cache + retry up to 2x!
+            // Automatic HTTP 567 / 403 / stream recovery: exclude failed provider/URL,
+            // resolve a fresh verified stream, and replace the MediaItem on ExoPlayer!
             if (activeTrack != null && ctrl != null) {
                 val prevAttempts = if (retryAttemptsForTrack.first == activeTrack.id) retryAttemptsForTrack.second else 0
-                if (prevAttempts < 2) {
+                if (prevAttempts < MAX_AUTO_RECOVERY_ATTEMPTS) {
                     retryAttemptsForTrack = activeTrack.id to (prevAttempts + 1)
-                    container.musicRepository.invalidateStream(activeTrack.id)
+                    Log.w(
+                        TAG,
+                        "Recovering from ${error.errorCodeName} (HTTP $statusCode) for ${activeTrack.id} (attempt ${prevAttempts + 1}/$MAX_AUTO_RECOVERY_ATTEMPTS)"
+                    )
+                    container.musicRepository.markStreamFailed(
+                        trackId = activeTrack.id,
+                        failedUrl = failedUrl,
+                        resolution = lastResForTrack,
+                        statusCode = statusCode
+                    )
                     LiquidAudioCache.evictTrackCache(activeTrack.id)
+                    val resumePos = _positionMs.value.coerceAtLeast(0L)
                     _uiState.update {
                         it.copy(
                             isBuffering = true,
                             playbackError = null,
-                            statusToast = "Switching audio stream client (attempt ${prevAttempts + 1}/2)…"
+                            statusToast = "Switching audio stream source (attempt ${prevAttempts + 1}/$MAX_AUTO_RECOVERY_ATTEMPTS)…"
                         )
                     }
-                    viewModelScope.launch {
-                        delay(350L)
-                        val safeIdx = state.currentIndex.coerceIn(0, (ctrl.mediaItemCount - 1).coerceAtLeast(0))
-                        ctrl.seekTo(safeIdx, _positionMs.value.coerceAtLeast(0L))
-                        ctrl.prepare()
-                        ctrl.play()
+                    resolvePlayJob?.cancel()
+                    resolvePlayJob = viewModelScope.launch {
+                        delay(250L)
+                        val freshRes = withContext(Dispatchers.IO) {
+                            runCatching {
+                                container.musicRepository.resolvePlaybackStream(activeTrack, currentQuality)
+                            }.getOrNull()
+                        }
+                        if (!isActive || _uiState.value.currentTrack?.id != activeTrack.id) return@launch
+                        val activeCtrl = mediaController ?: return@launch
+                        if (freshRes != null && activeCtrl.mediaItemCount > 0) {
+                            val safeIdx = _uiState.value.currentIndex
+                                .coerceIn(0, (activeCtrl.mediaItemCount - 1).coerceAtLeast(0))
+                            val freshItem = buildResolvedMediaItem(activeTrack, freshRes)
+                            activeCtrl.replaceMediaItem(safeIdx, freshItem)
+                            activeCtrl.seekTo(safeIdx, resumePos)
+                            activeCtrl.prepare()
+                            activeCtrl.play()
+                        } else {
+                            handleExhaustedPlaybackError(activeTrack, error, activeCtrl)
+                        }
                     }
                     return
                 }
             }
 
-            val rootMessage = error.cause?.message.orEmpty()
-            val friendlyError = when {
-                rootMessage.contains("No playable stream", ignoreCase = true) ->
-                    "No playable stream available for \"${activeTrack?.title.orEmpty()}\". Sign in to YouTube Music in Profile or tap Next."
-                else -> "Stream error (${error.errorCodeName}). Tap Retry or Next."
-            }
-            _uiState.update {
-                it.copy(
-                    isBuffering = false,
-                    playbackError = friendlyError
-                )
-            }
+            Log.e(TAG, "ExoPlayer playback error: ${error.errorCodeName} (HTTP $statusCode)", error)
+            handleExhaustedPlaybackError(activeTrack, error, ctrl)
+        }
+    }
 
-            // Respect Echo Music's Auto-Skip Next on Error setting after retries exhaust
-            viewModelScope.launch {
-                val autoSkip = runCatching {
-                    container.preferencesRepository.soundLabSettings.first().autoSkipNextOnError
-                }.getOrDefault(false)
-                if (autoSkip && ctrl != null && ctrl.hasNextMediaItem()) {
-                    delay(900L)
-                    ctrl.seekToNextMediaItem()
-                    ctrl.prepare()
-                    ctrl.play()
-                }
+    private fun handleExhaustedPlaybackError(
+        activeTrack: Track?,
+        error: androidx.media3.common.PlaybackException,
+        ctrl: MediaController?
+    ) {
+        val rootMessage = error.cause?.message.orEmpty()
+        val friendlyError = when {
+            rootMessage.contains("No playable stream", ignoreCase = true) ->
+                "No playable stream available for \"${activeTrack?.title.orEmpty()}\". Sign in to YouTube Music in Profile or tap Next."
+            else -> "Stream error (${error.errorCodeName}). Tap Retry or Next."
+        }
+        _uiState.update {
+            it.copy(
+                isBuffering = false,
+                playbackError = friendlyError
+            )
+        }
+
+        // Respect Echo Music's Auto-Skip Next on Error setting after retries exhaust
+        viewModelScope.launch {
+            val autoSkip = runCatching {
+                container.preferencesRepository.soundLabSettings.first().autoSkipNextOnError
+            }.getOrDefault(false)
+            if (autoSkip && ctrl != null && ctrl.hasNextMediaItem()) {
+                delay(900L)
+                skipNext()
             }
         }
     }
@@ -368,8 +420,11 @@ class PlayerViewModel(
                         RepeatModeState.OFF -> Player.REPEAT_MODE_OFF
                     }
                 }
-                controller.prepare()
-                controller.pause() // Ready in mini-player without blasting audio unexpectedly on startup
+                val restoredTrack = savedTracks[safeIdx]
+                if (isLocalTrack(restoredTrack)) {
+                    controller.prepare()
+                }
+                controller.pause() // Ready in mini-player without triggering remote fetches or audio on startup
 
                 val activeTrack = savedTracks[safeIdx]
                 _positionMs.value = safePos
@@ -481,30 +536,64 @@ class PlayerViewModel(
             return
         }
 
-        val mediaItems = enrichedTracks.map { buildMediaItem(it) }
+        resolvePlayJob?.cancel()
+        val activeTrack = enrichedTracks[safeIdx]
         commitListeningEventIfQualified()
         _positionMs.value = 0L
         _uiState.update {
             it.copy(
                 queue = enrichedTracks,
                 currentIndex = safeIdx,
-                currentTrack = enrichedTracks[safeIdx],
+                currentTrack = activeTrack,
                 positionMs = 0L,
-                durationMs = enrichedTracks[safeIdx].durationMs,
+                durationMs = activeTrack.durationMs,
                 playbackError = null,
                 isBuffering = true
             )
         }
-        onActiveTrackChanged(enrichedTracks[safeIdx], safeIdx)
+        onActiveTrackChanged(activeTrack, safeIdx)
 
-        ctrl.setMediaItems(mediaItems, safeIdx, 0L)
-        ctrl.prepare()
-        ctrl.play()
+        if (isLocalTrack(activeTrack)) {
+            val mediaItems = enrichedTracks.map { buildMediaItem(it) }
+            ctrl.setMediaItems(mediaItems, safeIdx, 0L)
+            ctrl.prepare()
+            ctrl.play()
+        } else {
+            // Pause previous audio immediately while pre-resolving the selected remote track off-thread.
+            // Pre-resolving avoids throwing HlsRedirectIOException for HLS manifests and pre-validates HTTP status.
+            ctrl.pause()
+            resolvePlayJob = viewModelScope.launch {
+                val resolved = withContext(Dispatchers.IO) {
+                    runCatching {
+                        container.musicRepository.resolvePlaybackStream(activeTrack, currentQuality)
+                    }.getOrNull()
+                }
+                if (!isActive || _uiState.value.currentTrack?.id != activeTrack.id) return@launch
+                val activeCtrl = mediaController ?: return@launch
+                if (resolved == null) {
+                    val fallbackItems = enrichedTracks.map { buildMediaItem(it) }
+                    activeCtrl.setMediaItems(fallbackItems, safeIdx, 0L)
+                    _uiState.update {
+                        it.copy(
+                            isBuffering = false,
+                            playbackError = "No playable stream available for \"${activeTrack.title}\". Sign in to YouTube Music in Profile or tap Next."
+                        )
+                    }
+                    return@launch
+                }
+                val mediaItems = enrichedTracks.mapIndexed { idx, track ->
+                    if (idx == safeIdx) buildResolvedMediaItem(track, resolved) else buildMediaItem(track)
+                }
+                activeCtrl.setMediaItems(mediaItems, safeIdx, 0L)
+                activeCtrl.prepare()
+                activeCtrl.play()
+            }
+        }
 
         maybeAppendEndlessRadio(safeIdx, enrichedTracks)
 
         viewModelScope.launch {
-            runCatching { container.dao.upsertTrack(TrackEntity.fromDomain(enrichedTracks[safeIdx])) }
+            runCatching { container.dao.upsertTrack(TrackEntity.fromDomain(activeTrack)) }
         }
     }
 
@@ -652,15 +741,15 @@ class PlayerViewModel(
         val state = _uiState.value
         val track = state.currentTrack ?: return
         retryAttemptsForTrack = track.id to 0
+        container.musicRepository.clearTrackFailures(track.id)
         container.musicRepository.invalidateStream(track.id)
         LiquidAudioCache.evictTrackCache(track.id)
         _uiState.update { it.copy(playbackError = null, isBuffering = true) }
         container.musicRepository.registerTrack(track)
         val ctrl = mediaController ?: return
         val idx = state.currentIndex.coerceIn(0, (ctrl.mediaItemCount - 1).coerceAtLeast(0))
-        ctrl.seekTo(idx, _positionMs.value.coerceAtLeast(0L))
-        ctrl.prepare()
-        ctrl.play()
+        val resumePos = _positionMs.value.coerceAtLeast(0L)
+        resolveAndPlayQueueIndex(idx, resumePos, forceResolve = true)
     }
 
     fun saveQueueAsPlaylist(name: String) {
@@ -734,6 +823,12 @@ class PlayerViewModel(
         if (ctrl.isPlaying) {
             ctrl.pause()
         } else {
+            val state = _uiState.value
+            val currentIdx = state.currentIndex
+            if (ctrl.playbackState == Player.STATE_IDLE && currentIdx in state.queue.indices) {
+                resolveAndPlayQueueIndex(currentIdx, _positionMs.value.coerceAtLeast(0L))
+                return
+            }
             if (ctrl.playbackState == Player.STATE_ENDED) {
                 ctrl.seekTo(0L)
             }
@@ -743,19 +838,32 @@ class PlayerViewModel(
 
     fun skipNext() {
         val ctrl = mediaController ?: return
-        if (ctrl.hasNextMediaItem()) {
-            ctrl.seekToNextMediaItem()
-        } else if (ctrl.mediaItemCount > 0) {
-            ctrl.seekTo(0, 0L)
+        val queue = _uiState.value.queue
+        if (queue.isEmpty()) return
+        val nextIdx = if (ctrl.hasNextMediaItem()) {
+            ctrl.nextMediaItemIndex
+        } else {
+            0
+        }
+        if (nextIdx in queue.indices) {
+            resolveAndPlayQueueIndex(nextIdx, 0L)
         }
     }
 
     fun skipPrevious() {
         val ctrl = mediaController ?: return
+        val queue = _uiState.value.queue
         if (ctrl.currentPosition > 3_500L) {
             ctrl.seekTo(0L)
-        } else if (ctrl.hasPreviousMediaItem()) {
-            ctrl.seekToPreviousMediaItem()
+            return
+        }
+        val prevIdx = if (ctrl.hasPreviousMediaItem()) {
+            ctrl.previousMediaItemIndex
+        } else {
+            -1
+        }
+        if (prevIdx in queue.indices) {
+            resolveAndPlayQueueIndex(prevIdx, 0L)
         } else {
             ctrl.seekTo(0L)
         }
@@ -785,9 +893,70 @@ class PlayerViewModel(
     fun jumpToQueueIndex(index: Int) {
         val queue = _uiState.value.queue
         if (index !in queue.indices) return
-        mediaController?.seekTo(index, 0L)
-        mediaController?.play()
-        onActiveTrackChanged(queue[index], index)
+        resolveAndPlayQueueIndex(index, 0L)
+    }
+
+    private fun resolveAndPlayQueueIndex(
+        index: Int,
+        seekPosMs: Long,
+        forceResolve: Boolean = false
+    ) {
+        val ctrl = mediaController ?: return
+        val queue = _uiState.value.queue
+        val track = queue.getOrNull(index) ?: return
+        if (index >= ctrl.mediaItemCount) return
+
+        val existingItem = ctrl.getMediaItemAt(index)
+        val existingUri = existingItem.localConfiguration?.uri
+        val needsRemoteResolve = !isLocalTrack(track) && (
+            forceResolve ||
+                (existingUri?.scheme == LIQUID_RESOLVE_SCHEME && !LiquidAudioCache.hasPreResolved(track.id))
+            )
+
+        commitListeningEventIfQualified()
+        _positionMs.value = seekPosMs
+        onActiveTrackChanged(track, index)
+
+        if (!needsRemoteResolve) {
+            _uiState.update { it.copy(playbackError = null, isBuffering = true) }
+            ctrl.seekTo(index, seekPosMs)
+            ctrl.prepare()
+            ctrl.play()
+            return
+        }
+
+        ctrl.pause()
+        _uiState.update { it.copy(playbackError = null, isBuffering = true) }
+        resolvePlayJob?.cancel()
+        resolvePlayJob = viewModelScope.launch {
+            val resolved = withContext(Dispatchers.IO) {
+                runCatching {
+                    container.musicRepository.resolvePlaybackStream(track, currentQuality)
+                }.getOrNull()
+            }
+            if (!isActive || _uiState.value.currentTrack?.id != track.id) return@launch
+            val activeCtrl = mediaController ?: return@launch
+            if (resolved == null) {
+                _uiState.update {
+                    it.copy(
+                        isBuffering = false,
+                        playbackError = "No playable stream available for \"${track.title}\". Sign in to YouTube Music in Profile or tap Next."
+                    )
+                }
+                return@launch
+            }
+            if (activeCtrl.mediaItemCount != queue.size) {
+                val rebuilt = queue.mapIndexed { idx, t ->
+                    if (idx == index) buildResolvedMediaItem(t, resolved) else buildMediaItem(t)
+                }
+                activeCtrl.setMediaItems(rebuilt, index, seekPosMs)
+            } else if (index < activeCtrl.mediaItemCount) {
+                activeCtrl.replaceMediaItem(index, buildResolvedMediaItem(track, resolved))
+                activeCtrl.seekTo(index, seekPosMs)
+            }
+            activeCtrl.prepare()
+            activeCtrl.play()
+        }
     }
 
     fun moveQueueItem(fromIndex: Int, toIndex: Int) {
@@ -944,15 +1113,29 @@ class PlayerViewModel(
             }
         }
 
-        // Pre-resolve the next track's playback stream in the background when preloadNextSongEnabled is active
+        // Pre-resolve the next track's playback stream in the background so gapless/HLS transitions avoid HlsRedirectIOException
         preloadNextJob?.cancel()
         if (currentSettings.preloadNextSongEnabled) {
-            val nextTrack = _uiState.value.queue.getOrNull(index + 1)
-            if (nextTrack != null && nextTrack.sourceType != SourceType.LOCAL && nextTrack.downloadedFilePath.isBlank()) {
-                preloadNextJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val nextIdx = index + 1
+            val nextTrack = _uiState.value.queue.getOrNull(nextIdx)
+            if (nextTrack != null && !isLocalTrack(nextTrack)) {
+                preloadNextJob = viewModelScope.launch(Dispatchers.IO) {
                     delay(1_200L)
-                    runCatching {
+                    val resolved = runCatching {
                         container.musicRepository.resolvePlaybackStream(nextTrack, currentQuality)
+                    }.getOrNull() ?: return@launch
+                    if (LiquidAudioCache.isHlsResolution(resolved)) {
+                        if (resolved.headers.isNotEmpty()) {
+                            LiquidAudioCache.registerUrlHeaders(resolved.uri, resolved.headers)
+                        }
+                        withContext(Dispatchers.Main.immediate) {
+                            val ctrl = mediaController ?: return@withContext
+                            if (nextIdx < ctrl.mediaItemCount && ctrl.getMediaItemAt(nextIdx).mediaId == nextTrack.id) {
+                                ctrl.replaceMediaItem(nextIdx, buildResolvedMediaItem(nextTrack, resolved, updateLastResolution = false))
+                            }
+                        }
+                    } else {
+                        LiquidAudioCache.putPreResolved(nextTrack.id, resolved)
                     }
                 }
             }
@@ -982,16 +1165,13 @@ class PlayerViewModel(
         }
     }
 
-    private fun buildMediaItem(track: Track): MediaItem {
-        val uri = when {
-            track.downloadedFilePath.isNotBlank() -> {
-                val p = track.downloadedFilePath
-                if (p.startsWith("/")) Uri.parse("file://$p") else Uri.parse(p)
-            }
-            track.sourceType == SourceType.LOCAL && track.localUri.isNotBlank() -> Uri.parse(track.localUri)
-            else -> LiquidAudioCache.buildResolvingUri(track.id)
-        }
-        val metadata = MediaMetadata.Builder()
+    private fun isLocalTrack(track: Track): Boolean {
+        return track.downloadedFilePath.isNotBlank() ||
+            (track.sourceType == SourceType.LOCAL && track.localUri.isNotBlank())
+    }
+
+    private fun buildTrackMetadata(track: Track): MediaMetadata {
+        return MediaMetadata.Builder()
             .setTitle(track.title)
             .setArtist(track.artist)
             .setAlbumTitle(track.album)
@@ -1001,10 +1181,52 @@ class PlayerViewModel(
                 }
             }
             .build()
+    }
+
+    private fun buildResolvedMediaItem(
+        track: Track,
+        resolution: StreamResolution?,
+        updateLastResolution: Boolean = true
+    ): MediaItem {
+        if (resolution == null) return buildMediaItem(track)
+        if (updateLastResolution) {
+            LiquidAudioCache.recordLastResolution(track.id, resolution)
+        }
+        if (resolution.headers.isNotEmpty()) {
+            LiquidAudioCache.registerUrlHeaders(resolution.uri, resolution.headers)
+        }
+        if (LiquidAudioCache.isHlsResolution(resolution)) {
+            return MediaItem.Builder()
+                .setMediaId(track.id)
+                .setUri(Uri.parse(resolution.uri))
+                .setMimeType(MimeTypes.APPLICATION_M3U8)
+                .setMediaMetadata(buildTrackMetadata(track))
+                .build()
+        }
+        if (resolution.uri.startsWith("file://") || resolution.uri.startsWith("content://")) {
+            return MediaItem.Builder()
+                .setMediaId(track.id)
+                .setUri(Uri.parse(resolution.uri))
+                .setMediaMetadata(buildTrackMetadata(track))
+                .build()
+        }
+        LiquidAudioCache.putPreResolved(track.id, resolution)
+        return buildMediaItem(track)
+    }
+
+    private fun buildMediaItem(track: Track): MediaItem {
+        val uri = when {
+            track.downloadedFilePath.isNotBlank() -> {
+                val p = track.downloadedFilePath
+                if (p.startsWith("/")) Uri.parse("file://$p") else Uri.parse(p)
+            }
+            track.sourceType == SourceType.LOCAL && track.localUri.isNotBlank() -> Uri.parse(track.localUri)
+            else -> LiquidAudioCache.buildResolvingUri(track.id)
+        }
         return MediaItem.Builder()
             .setMediaId(track.id)
             .setUri(uri)
-            .setMediaMetadata(metadata)
+            .setMediaMetadata(buildTrackMetadata(track))
             .build()
     }
 
@@ -1067,5 +1289,9 @@ class PlayerViewModel(
         mediaController?.removeListener(playerListener)
         controllerFuture?.let { MediaController.releaseFuture(it) }
         super.onCleared()
+    }
+
+    companion object {
+        private const val MAX_AUTO_RECOVERY_ATTEMPTS = 3
     }
 }

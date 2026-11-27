@@ -155,6 +155,7 @@ import com.example.ui.glass.rememberMiniPlayerPillPhysics
 import com.example.ui.theme.DeepVoid
 import com.example.ui.theme.EmeraldPulse
 import com.example.ui.theme.FrostWhite
+import com.example.ui.theme.LocalLiquidGlassConfig
 import com.example.ui.theme.LocalLiquidPalette
 import com.example.ui.theme.LuminousRose
 import com.example.ui.theme.MistSecondary
@@ -193,8 +194,9 @@ fun FloatingLiquidMiniPlayer(
 ) {
     val track = playerState.currentTrack ?: return
     val palette = LocalLiquidPalette.current
-    val activeAccent = remember(palette.primaryGlow) {
-        AppleGlassTokens.ensureVibrantOnDarkGlass(palette.primaryGlow)
+    val glassConfig = LocalLiquidGlassConfig.current
+    val activeAccent = remember(palette.primaryGlow, glassConfig.accentMode) {
+        AppleGlassTokens.resolveAccent(palette.primaryGlow, glassConfig.accentMode)
     }
     val haptic = LocalHapticFeedback.current
     val physics = rememberMiniPlayerPillPhysics()
@@ -236,10 +238,10 @@ fun FloatingLiquidMiniPlayer(
             ),
         cornerRadius = 33.dp,
         tintColor = AppleGlassTokens.SmokedCrystalBase,
-        surfaceAlpha = 0.29f,
+        surfaceAlpha = glassConfig.idleTintAlpha,
         highlightAccent = activeAccent,
-        refractionBoost = 1.42f,
-        blurOverrideDp = 5.5f,
+        refractionBoost = glassConfig.miniPlayerRefractionBoost,
+        blurOverrideDp = glassConfig.blurRadiusDp,
         smokedCrystalRim = true
     ) {
         Box(
@@ -250,21 +252,24 @@ fun FloatingLiquidMiniPlayer(
                     // iOS 26 directional Fresnel specular rim that glides smoothly under your thumb
                     val focusX = size.width * physics.specularFraction.value
                     val touchGlowVal = physics.touchGlow.value
-                    val glowBoost = 0.34f + 0.46f * touchGlowVal
-                    val radiusPx = size.height / 2f
-                    drawRoundRect(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                Color.White.copy(alpha = glowBoost),
-                                activeAccent.copy(alpha = (0.14f + 0.26f * touchGlowVal)),
-                                Color.Transparent
+                    val rimScale = glassConfig.rimHighlightAlpha.coerceIn(0f, 1f)
+                    val glowBoost = (0.28f * rimScale) + (0.48f * touchGlowVal)
+                    if (glowBoost > 0.01f) {
+                        val radiusPx = size.height / 2f
+                        drawRoundRect(
+                            brush = Brush.radialGradient(
+                                colors = listOf(
+                                    Color.White.copy(alpha = glowBoost.coerceIn(0f, 0.85f)),
+                                    activeAccent.copy(alpha = (0.10f * rimScale + 0.24f * touchGlowVal).coerceIn(0f, 0.55f)),
+                                    Color.Transparent
+                                ),
+                                center = Offset(focusX, 0f),
+                                radius = size.width * 0.56f
                             ),
-                            center = Offset(focusX, 0f),
-                            radius = size.width * 0.56f
-                        ),
-                        cornerRadius = CornerRadius(radiusPx, radiusPx),
-                        style = Stroke(width = (1.05f + 0.35f * touchGlowVal).dp.toPx())
-                    )
+                            cornerRadius = CornerRadius(radiusPx, radiusPx),
+                            style = Stroke(width = (0.90f + 0.35f * touchGlowVal).dp.toPx())
+                        )
+                    }
                 }
         ) {
             // Subtle directional skip detent indicator during horizontal drag

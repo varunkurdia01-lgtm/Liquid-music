@@ -136,6 +136,7 @@ class LiquidAppContainer(context: Context) {
             audiusFallback = audiusFallback,
             soundCloudFallback = soundCloudFallback,
             bilibiliFallback = bilibiliFallback,
+            okHttpClient = okHttpClient,
             onProxyConfigured = ::configureGlobalProxy
         )
     }

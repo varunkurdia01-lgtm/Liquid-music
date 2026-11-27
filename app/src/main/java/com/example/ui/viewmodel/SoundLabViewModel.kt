@@ -462,18 +462,7 @@ class SoundLabViewModel(
 
     fun applyGlassOpticalPreset(preset: GlassOpticalPreset) {
         updateSettings { current ->
-            current.copy(
-                glassConfig = LiquidGlassConfig(
-                    opticalPreset = preset,
-                    pillScale = preset.pillScale,
-                    springStiffness = preset.springStiffness,
-                    springDamping = preset.springDamping,
-                    refractionHeightDp = preset.refractionHeightDp,
-                    refractionAmountDp = preset.refractionAmountDp,
-                    blurRadiusDp = preset.blurRadiusDp,
-                    chromaticAberration = preset.chromaticAberration
-                )
-            )
+            current.copy(glassConfig = preset.toConfig())
         }
     }
 

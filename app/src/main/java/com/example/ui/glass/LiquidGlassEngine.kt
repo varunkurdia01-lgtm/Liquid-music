@@ -78,6 +78,8 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.size.Precision
+import com.example.domain.model.GlassAccentMode
+import com.example.domain.model.GlassHighlightStyle
 import com.example.domain.model.GlassQualityTier
 import com.example.ui.theme.FrostWhite
 import com.example.ui.theme.LocalGlassQuality
@@ -90,6 +92,7 @@ import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.colorControls
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
@@ -122,6 +125,8 @@ object AppleGlassTokens {
     val SpecularRimMid = Color.White.copy(alpha = 0.07f)
     val SpecularRimBottom = Color.White.copy(alpha = 0.16f)
 
+    val DemoIosCyan = Color(0xFF29B6F6)
+
     /**
      * Guarantees dynamic album-art accent colors stay luminous and high-contrast
      * over smoked dark optical glass without washing out vibrant hues.
@@ -131,6 +136,18 @@ object AppleGlassTokens {
         if (lum >= 0.36f) return accent
         val lift = ((0.38f - lum) * 1.45f).coerceIn(0f, 0.58f)
         return lerp(accent, Color.White, lift)
+    }
+
+    fun resolveAccent(palettePrimary: Color, mode: GlassAccentMode): Color = when (mode) {
+        GlassAccentMode.ALBUM_PALETTE -> ensureVibrantOnDarkGlass(palettePrimary)
+        GlassAccentMode.IOS_CYAN -> DemoIosCyan
+        GlassAccentMode.PURE_WHITE -> FrostWhite
+    }
+
+    fun resolveHighlight(style: GlassHighlightStyle): Highlight? = when (style) {
+        GlassHighlightStyle.DEFAULT -> Highlight.Default
+        GlassHighlightStyle.AMBIENT -> Highlight.Ambient
+        GlassHighlightStyle.MINIMAL -> null
     }
 }
 
@@ -326,7 +343,12 @@ fun LiquidGlassSurface(
         val enableLens = glassTier == GlassQualityTier.ULTRA_AGSL &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
         val effectiveBlurDp = blurOverrideDp ?: glassConfig.blurRadiusDp
-        val veilAlpha = (surfaceAlpha * 0.68f).coerceIn(0.04f, 0.44f)
+        val veilAlpha = if (smokedCrystalRim) {
+            surfaceAlpha.coerceIn(0.0f, 0.65f)
+        } else {
+            (surfaceAlpha * 0.68f).coerceIn(0.04f, 0.44f)
+        }
+        val rimAlpha = glassConfig.rimHighlightAlpha.coerceIn(0f, 1f)
 
         Box(
             modifier = modifier
@@ -334,52 +356,64 @@ fun LiquidGlassSurface(
                     backdrop = backdrop,
                     shape = { shape },
                     effects = {
-                        vibrancy()
+                        if (glassConfig.vibrancyEnabled) {
+                            vibrancy()
+                        }
+                        if (abs(glassConfig.backdropSaturation - 1f) > 0.02f || abs(glassConfig.backdropBrightness) > 0.005f) {
+                            colorControls(
+                                brightness = glassConfig.backdropBrightness,
+                                contrast = 1f,
+                                saturation = glassConfig.backdropSaturation
+                            )
+                        }
                         if (effectiveBlurDp > 0.35f) {
                             blur(effectiveBlurDp.dp.toPx())
                         }
-                        if (enableLens) {
+                        if (enableLens && glassConfig.refractionHeightDp > 0.25f && glassConfig.refractionAmountDp > 0.25f) {
+                            val maxH = (size.minDimension * 0.42f).coerceAtLeast(1f)
+                            val maxAmt = (size.minDimension * 0.85f).coerceAtLeast(1f)
+                            val safeH = (glassConfig.refractionHeightDp * refractionBoost).dp.toPx().coerceIn(0.5f, maxH)
+                            val safeAmt = (glassConfig.refractionAmountDp * refractionBoost).dp.toPx().coerceIn(0.5f, maxAmt)
                             lens(
-                                refractionHeight = (glassConfig.refractionHeightDp * refractionBoost).dp.toPx(),
-                                refractionAmount = (glassConfig.refractionAmountDp * refractionBoost).dp.toPx(),
-                                depthEffect = true,
-                                chromaticAberration = glassConfig.chromaticAberration || smokedCrystalRim
+                                refractionHeight = safeH,
+                                refractionAmount = safeAmt,
+                                depthEffect = glassConfig.depthEffectEnabled,
+                                chromaticAberration = glassConfig.chromaticAberration
                             )
                         }
                     },
-                    highlight = { Highlight.Default },
+                    highlight = { AppleGlassTokens.resolveHighlight(glassConfig.highlightStyle) },
                     shadow = { Shadow.Default },
                     onDrawSurface = {
-                        if (veilAlpha > 0.01f) {
+                        if (veilAlpha > 0.005f) {
                             drawRect(tintColor.copy(alpha = veilAlpha))
                         }
-                        if (smokedCrystalRim) {
-                            // Convex top crown highlight + subtle bottom internal glass thickness bevel
+                        if (smokedCrystalRim && rimAlpha > 0.01f) {
+                            // Subtle top convex crown sheen + gentle lower inner depth without harsh painted strokes
                             drawRect(
                                 brush = Brush.verticalGradient(
                                     colorStops = arrayOf(
-                                        0.0f to Color.White.copy(alpha = 0.14f),
-                                        0.26f to Color.White.copy(alpha = 0.02f),
-                                        0.74f to Color.Transparent,
-                                        1.0f to AppleGlassTokens.SmokedCrystalInnerShadow.copy(alpha = 0.30f)
+                                        0.0f to Color.White.copy(alpha = 0.10f * rimAlpha),
+                                        0.28f to Color.Transparent,
+                                        0.80f to Color.Transparent,
+                                        1.0f to AppleGlassTokens.SmokedCrystalInnerShadow.copy(alpha = 0.20f * rimAlpha)
                                     )
                                 )
                             )
                             val rPx = cornerRadius.toPx().coerceAtMost(size.minDimension / 2f)
-                            val strokePx = 0.95.dp.toPx()
                             drawRoundRect(
                                 brush = Brush.verticalGradient(
                                     colorStops = arrayOf(
-                                        0.0f to Color.White.copy(alpha = 0.50f),
-                                        0.38f to Color.White.copy(alpha = 0.10f),
-                                        0.70f to Color.White.copy(alpha = 0.09f),
-                                        1.0f to Color.White.copy(alpha = 0.32f)
+                                        0.0f to Color.White.copy(alpha = 0.34f * rimAlpha),
+                                        0.40f to Color.Transparent,
+                                        0.78f to Color.Transparent,
+                                        1.0f to Color.White.copy(alpha = 0.20f * rimAlpha)
                                     )
                                 ),
                                 cornerRadius = CornerRadius(rPx, rPx),
-                                style = Stroke(width = strokePx)
+                                style = Stroke(width = 0.75.dp.toPx())
                             )
-                        } else {
+                        } else if (!smokedCrystalRim) {
                             // Whisper-soft top optical sheen matching Apple iOS 26 curved glass
                             drawRect(
                                 brush = Brush.verticalGradient(

@@ -313,6 +313,18 @@ enum class GlassQualityTier(val title: String, val subtitle: String) {
     BATTERY_SAVER("Battery Saver", "Obsidian smoked glass with low GPU draw")
 }
 
+enum class GlassHighlightStyle(val label: String) {
+    DEFAULT("Directional"),
+    AMBIENT("Ambient"),
+    MINIMAL("Minimal")
+}
+
+enum class GlassAccentMode(val label: String) {
+    ALBUM_PALETTE("Album Art"),
+    IOS_CYAN("iOS Cyan"),
+    PURE_WHITE("Pure White")
+}
+
 enum class GlassOpticalPreset(
     val label: String,
     val pillScale: Float,
@@ -321,12 +333,165 @@ enum class GlassOpticalPreset(
     val refractionHeightDp: Float,
     val refractionAmountDp: Float,
     val blurRadiusDp: Float,
-    val chromaticAberration: Boolean
+    val chromaticAberration: Boolean,
+    val alwaysShowLensAtRest: Boolean = false,
+    val idleTintAlpha: Float = 0.26f,
+    val restingPillAlpha: Float = 0.16f,
+    val rimHighlightAlpha: Float = 0.40f,
+    val heldRefractionHeightDp: Float = 12f,
+    val heldRefractionAmountDp: Float = 24f,
+    val heldBlurRadiusDp: Float = 0f,
+    val heldTintAlpha: Float = 0.04f,
+    val heldScaleX: Float = 1.12f,
+    val heldScaleY: Float = 1.18f,
+    val velocityStretchStrength: Float = 0.14f,
+    val heldRimAlpha: Float = 0.28f,
+    val tapGlideDurationMs: Int = 340,
+    val depthEffectEnabled: Boolean = true,
+    val vibrancyEnabled: Boolean = true,
+    val backdropSaturation: Float = 1.15f,
+    val backdropBrightness: Float = 0.0f,
+    val highlightStyle: GlassHighlightStyle = GlassHighlightStyle.DEFAULT,
+    val accentMode: GlassAccentMode = GlassAccentMode.ALBUM_PALETTE,
+    val detachedSearchOrb: Boolean = true,
+    val miniPlayerRefractionBoost: Float = 1.15f
 ) {
-    BALANCED_IOS26("iOS 26 Liquid Glass", 1.0f, 520f, 0.68f, 14f, 28f, 6f, true),
-    ULTRA_PRISM("Ultra Crystal Prism", 1.08f, 440f, 0.56f, 22f, 48f, 3f, true),
-    SOFT_FROSTED("Soft Frosted", 0.98f, 560f, 0.78f, 10f, 18f, 16f, false),
-    CUSTOM("Custom", 1.0f, 520f, 0.68f, 14f, 28f, 6f, true)
+    BALANCED_IOS26(
+        label = "iOS 26 Authentic",
+        pillScale = 1.0f,
+        springStiffness = 520f,
+        springDamping = 0.68f,
+        refractionHeightDp = 10f,
+        refractionAmountDp = 20f,
+        blurRadiusDp = 6f,
+        chromaticAberration = true,
+        alwaysShowLensAtRest = false,
+        idleTintAlpha = 0.26f,
+        restingPillAlpha = 0.16f,
+        rimHighlightAlpha = 0.40f,
+        heldRefractionHeightDp = 12f,
+        heldRefractionAmountDp = 24f,
+        heldBlurRadiusDp = 0f,
+        heldTintAlpha = 0.04f,
+        heldScaleX = 1.12f,
+        heldScaleY = 1.18f,
+        velocityStretchStrength = 0.14f,
+        heldRimAlpha = 0.28f,
+        backdropSaturation = 1.15f
+    ),
+    DEMO_ALWAYS_CRYSTAL(
+        label = "Demo Crystal",
+        pillScale = 1.02f,
+        springStiffness = 480f,
+        springDamping = 0.64f,
+        refractionHeightDp = 10f,
+        refractionAmountDp = 22f,
+        blurRadiusDp = 5f,
+        chromaticAberration = true,
+        alwaysShowLensAtRest = true,
+        idleTintAlpha = 0.28f,
+        restingPillAlpha = 0.10f,
+        rimHighlightAlpha = 0.45f,
+        heldRefractionHeightDp = 13f,
+        heldRefractionAmountDp = 28f,
+        heldBlurRadiusDp = 0f,
+        heldTintAlpha = 0.03f,
+        heldScaleX = 1.14f,
+        heldScaleY = 1.22f,
+        velocityStretchStrength = 0.16f,
+        heldRimAlpha = 0.34f,
+        backdropSaturation = 1.22f,
+        accentMode = GlassAccentMode.IOS_CYAN
+    ),
+    ULTRA_PRISM(
+        label = "Ultra Prism",
+        pillScale = 1.06f,
+        springStiffness = 440f,
+        springDamping = 0.56f,
+        refractionHeightDp = 14f,
+        refractionAmountDp = 28f,
+        blurRadiusDp = 3f,
+        chromaticAberration = true,
+        alwaysShowLensAtRest = false,
+        idleTintAlpha = 0.20f,
+        restingPillAlpha = 0.14f,
+        rimHighlightAlpha = 0.52f,
+        heldRefractionHeightDp = 16f,
+        heldRefractionAmountDp = 34f,
+        heldBlurRadiusDp = 0f,
+        heldTintAlpha = 0.02f,
+        heldScaleX = 1.16f,
+        heldScaleY = 1.24f,
+        velocityStretchStrength = 0.20f,
+        heldRimAlpha = 0.40f,
+        backdropSaturation = 1.32f
+    ),
+    SOFT_FROSTED(
+        label = "Soft Frosted",
+        pillScale = 0.98f,
+        springStiffness = 560f,
+        springDamping = 0.78f,
+        refractionHeightDp = 8f,
+        refractionAmountDp = 14f,
+        blurRadiusDp = 14f,
+        chromaticAberration = false,
+        alwaysShowLensAtRest = false,
+        idleTintAlpha = 0.34f,
+        restingPillAlpha = 0.20f,
+        rimHighlightAlpha = 0.32f,
+        heldRefractionHeightDp = 10f,
+        heldRefractionAmountDp = 18f,
+        heldBlurRadiusDp = 2f,
+        heldTintAlpha = 0.08f,
+        heldScaleX = 1.08f,
+        heldScaleY = 1.12f,
+        velocityStretchStrength = 0.08f,
+        heldRimAlpha = 0.22f,
+        backdropSaturation = 1.08f,
+        highlightStyle = GlassHighlightStyle.AMBIENT
+    ),
+    CUSTOM(
+        label = "Custom",
+        pillScale = 1.0f,
+        springStiffness = 520f,
+        springDamping = 0.68f,
+        refractionHeightDp = 10f,
+        refractionAmountDp = 20f,
+        blurRadiusDp = 6f,
+        chromaticAberration = true
+    );
+
+    fun toConfig(): LiquidGlassConfig = LiquidGlassConfig(
+        opticalPreset = this,
+        pillScale = pillScale,
+        springStiffness = springStiffness,
+        springDamping = springDamping,
+        refractionHeightDp = refractionHeightDp,
+        refractionAmountDp = refractionAmountDp,
+        blurRadiusDp = blurRadiusDp,
+        chromaticAberration = chromaticAberration,
+        alwaysShowLensAtRest = alwaysShowLensAtRest,
+        idleTintAlpha = idleTintAlpha,
+        restingPillAlpha = restingPillAlpha,
+        rimHighlightAlpha = rimHighlightAlpha,
+        heldRefractionHeightDp = heldRefractionHeightDp,
+        heldRefractionAmountDp = heldRefractionAmountDp,
+        heldBlurRadiusDp = heldBlurRadiusDp,
+        heldTintAlpha = heldTintAlpha,
+        heldScaleX = heldScaleX,
+        heldScaleY = heldScaleY,
+        velocityStretchStrength = velocityStretchStrength,
+        heldRimAlpha = heldRimAlpha,
+        tapGlideDurationMs = tapGlideDurationMs,
+        depthEffectEnabled = depthEffectEnabled,
+        vibrancyEnabled = vibrancyEnabled,
+        backdropSaturation = backdropSaturation,
+        backdropBrightness = backdropBrightness,
+        highlightStyle = highlightStyle,
+        accentMode = accentMode,
+        detachedSearchOrb = detachedSearchOrb,
+        miniPlayerRefractionBoost = miniPlayerRefractionBoost
+    )
 }
 
 @Immutable
@@ -335,10 +500,35 @@ data class LiquidGlassConfig(
     val pillScale: Float = 1.0f,
     val springStiffness: Float = 520f,
     val springDamping: Float = 0.68f,
-    val refractionHeightDp: Float = 14f,
-    val refractionAmountDp: Float = 28f,
+    // Idle / Rest Optics
+    val refractionHeightDp: Float = 10f,
+    val refractionAmountDp: Float = 20f,
     val blurRadiusDp: Float = 6f,
-    val chromaticAberration: Boolean = true
+    val alwaysShowLensAtRest: Boolean = false,
+    val idleTintAlpha: Float = 0.26f,
+    val restingPillAlpha: Float = 0.16f,
+    val rimHighlightAlpha: Float = 0.40f,
+    // Held / Dragging Crystal Droplet Optics
+    val heldRefractionHeightDp: Float = 12f,
+    val heldRefractionAmountDp: Float = 24f,
+    val heldBlurRadiusDp: Float = 0f,
+    val heldTintAlpha: Float = 0.04f,
+    val heldScaleX: Float = 1.12f,
+    val heldScaleY: Float = 1.18f,
+    val velocityStretchStrength: Float = 0.14f,
+    val heldRimAlpha: Float = 0.28f,
+    val tapGlideDurationMs: Int = 340,
+    // Color, Lighting & Dispersion
+    val chromaticAberration: Boolean = true,
+    val depthEffectEnabled: Boolean = true,
+    val vibrancyEnabled: Boolean = true,
+    val backdropSaturation: Float = 1.15f,
+    val backdropBrightness: Float = 0.0f,
+    val highlightStyle: GlassHighlightStyle = GlassHighlightStyle.DEFAULT,
+    val accentMode: GlassAccentMode = GlassAccentMode.ALBUM_PALETTE,
+    // Layout & Mini-Player
+    val detachedSearchOrb: Boolean = true,
+    val miniPlayerRefractionBoost: Float = 1.15f
 )
 
 enum class EqPreset(val label: String, val bandsDb: List<Float>) {
