@@ -434,7 +434,7 @@ enum class QuickPicksMode(val label: String) {
 data class SoundLabSettings(
     val audioQuality: AudioQuality = AudioQuality.HIGH_320,
     val cellularAudioQuality: AudioQuality = AudioQuality.HIGH_320,
-    val crossfadeSeconds: Int = 4,
+    val crossfadeSeconds: Int = 0,
     val skipSilenceEnabled: Boolean = false,
     val skipSilenceInstant: Boolean = false,
     val volumeNormalizationEnabled: Boolean = true,

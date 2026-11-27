@@ -165,7 +165,7 @@ fun EchoAddonManagerSheet(
                             enabled = urlInput.isNotBlank() && !isTesting,
                             modifier = Modifier
                                 .weight(1f)
-                                .height(46.dp)
+                                .height(48.dp)
                                 .testTag("verify_addon_button")
                         ) {
                             Row(
@@ -304,42 +304,42 @@ fun EchoAddonManagerSheet(
                                         color = MistSecondary
                                     )
                                 }
-                                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
                                     IconButton(
                                         onClick = { onAddAndTestAddon(addon.baseUrl) {} },
-                                        modifier = Modifier.size(34.dp)
+                                        modifier = Modifier.size(48.dp)
                                     ) {
-                                        Icon(Icons.Rounded.Refresh, contentDescription = "Re-test addon", tint = palette.secondaryGlow, modifier = Modifier.size(18.dp))
+                                        Icon(Icons.Rounded.Refresh, contentDescription = "Re-test addon", tint = palette.secondaryGlow, modifier = Modifier.size(20.dp))
                                     }
                                     IconButton(
                                         onClick = { onMovePriority(addon.id, true) },
                                         enabled = index > 0,
-                                        modifier = Modifier.size(34.dp)
+                                        modifier = Modifier.size(48.dp)
                                     ) {
                                         Icon(
                                             Icons.Rounded.ArrowUpward,
                                             contentDescription = "Move up",
                                             tint = if (index > 0) FrostWhite else MistSecondary.copy(alpha = 0.3f),
-                                            modifier = Modifier.size(18.dp)
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
                                     IconButton(
                                         onClick = { onMovePriority(addon.id, false) },
                                         enabled = index < addons.lastIndex,
-                                        modifier = Modifier.size(34.dp)
+                                        modifier = Modifier.size(48.dp)
                                     ) {
                                         Icon(
                                             Icons.Rounded.ArrowDownward,
                                             contentDescription = "Move down",
                                             tint = if (index < addons.lastIndex) FrostWhite else MistSecondary.copy(alpha = 0.3f),
-                                            modifier = Modifier.size(18.dp)
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
                                     IconButton(
                                         onClick = { onRemoveAddon(addon.id) },
-                                        modifier = Modifier.size(34.dp)
+                                        modifier = Modifier.size(48.dp)
                                     ) {
-                                        Icon(Icons.Rounded.Delete, contentDescription = "Remove addon", tint = LuminousRose, modifier = Modifier.size(18.dp))
+                                        Icon(Icons.Rounded.Delete, contentDescription = "Remove addon", tint = LuminousRose, modifier = Modifier.size(20.dp))
                                     }
                                 }
                             }

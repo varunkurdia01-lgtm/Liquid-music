@@ -15,11 +15,10 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -43,12 +42,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -58,6 +58,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -89,16 +90,38 @@ fun EchoSurfaceCard(
     onClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val shape = RoundedCornerShape(cornerRadius)
-    val topBg = if (elevated) {
-        AppleGlassTokens.ElevatedDarkTint.copy(alpha = 0.80f)
-    } else {
-        AppleGlassTokens.NeutralDarkTint.copy(alpha = 0.72f)
+    val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
+    val bgBrush = remember(elevated) {
+        val topBg = if (elevated) {
+            AppleGlassTokens.ElevatedDarkTint.copy(alpha = 0.80f)
+        } else {
+            AppleGlassTokens.NeutralDarkTint.copy(alpha = 0.72f)
+        }
+        val bottomBg = if (elevated) {
+            AppleGlassTokens.NeutralDarkTint.copy(alpha = 0.78f)
+        } else {
+            Color(0xFF0E121B).copy(alpha = 0.68f)
+        }
+        Brush.verticalGradient(listOf(topBg, bottomBg))
     }
-    val bottomBg = if (elevated) {
-        AppleGlassTokens.NeutralDarkTint.copy(alpha = 0.78f)
-    } else {
-        Color(0xFF0E121B).copy(alpha = 0.68f)
+    val borderBrush = remember(elevated, accentBorder) {
+        if (accentBorder != null) {
+            Brush.linearGradient(
+                listOf(
+                    accentBorder.copy(alpha = 0.68f),
+                    accentBorder.copy(alpha = 0.22f),
+                    Color.White.copy(alpha = 0.18f)
+                )
+            )
+        } else {
+            Brush.linearGradient(
+                listOf(
+                    Color.White.copy(alpha = if (elevated) 0.30f else 0.24f),
+                    Color.White.copy(alpha = 0.05f),
+                    Color.White.copy(alpha = if (elevated) 0.16f else 0.12f)
+                )
+            )
+        }
     }
 
     val clickModifier = if (onClick != null) {
@@ -111,41 +134,28 @@ fun EchoSurfaceCard(
         modifier = modifier
             .then(clickModifier)
             .clip(shape)
-            .background(Brush.verticalGradient(listOf(topBg, bottomBg)))
-            .drawWithContent {
-                drawContent()
+            .background(bgBrush)
+            .drawWithCache {
                 val rPx = cornerRadius.toPx()
-                drawRoundRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = if (elevated) 0.08f else 0.055f),
-                            Color.Transparent
-                        ),
-                        startY = 0f,
-                        endY = size.height * 0.36f
+                val sheen = Brush.verticalGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = if (elevated) 0.08f else 0.055f),
+                        Color.Transparent
                     ),
-                    cornerRadius = CornerRadius(rPx, rPx)
+                    startY = 0f,
+                    endY = size.height * 0.36f
                 )
+                onDrawWithContent {
+                    drawContent()
+                    drawRoundRect(
+                        brush = sheen,
+                        cornerRadius = CornerRadius(rPx, rPx)
+                    )
+                }
             }
             .border(
                 width = 0.7.dp,
-                brush = if (accentBorder != null) {
-                    Brush.linearGradient(
-                        listOf(
-                            accentBorder.copy(alpha = 0.68f),
-                            accentBorder.copy(alpha = 0.22f),
-                            Color.White.copy(alpha = 0.18f)
-                        )
-                    )
-                } else {
-                    Brush.linearGradient(
-                        listOf(
-                            Color.White.copy(alpha = if (elevated) 0.30f else 0.24f),
-                            Color.White.copy(alpha = 0.05f),
-                            Color.White.copy(alpha = if (elevated) 0.16f else 0.12f)
-                        )
-                    )
-                },
+                brush = borderBrush,
                 shape = shape
             ),
         content = content
@@ -154,13 +164,16 @@ fun EchoSurfaceCard(
 
 /**
  * High-stiffness iOS 26 spring-physics tactile bounce modifier for interactive taps across the app.
+ * Uses MutableInteractionSource press state without a competing pointerInput coroutine so LazyColumn
+ * and LazyRow scrolling stay zero-jank.
  */
 fun Modifier.bounceClick(
     scaleDown: Float = 0.955f,
     enableHaptics: Boolean = false,
     onClick: () -> Unit
 ): Modifier = composed {
-    var pressed by remember { mutableStateOf(false) }
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
     val haptics = LocalHapticFeedback.current
     val scale by animateFloatAsState(
         targetValue = if (pressed) scaleDown else 1f,
@@ -171,19 +184,12 @@ fun Modifier.bounceClick(
         label = "bounceClickScale"
     )
     this
-        .scale(scale)
-        .pointerInput(Unit) {
-            while (true) {
-                awaitPointerEventScope {
-                    awaitFirstDown(requireUnconsumed = false)
-                    pressed = true
-                    waitForUpOrCancellation()
-                    pressed = false
-                }
-            }
+        .graphicsLayer {
+            scaleX = scale
+            scaleY = scale
         }
         .clickable(
-            interactionSource = remember { MutableInteractionSource() },
+            interactionSource = interactionSource,
             indication = null
         ) {
             if (enableHaptics) {
@@ -374,22 +380,29 @@ fun EchoPlayerSeekBar(
     var widthPx by remember { mutableFloatStateOf(1f) }
     var isDragging by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(progress) }
+    val currentOnSeekProgress by rememberUpdatedState(onSeekProgress)
+    val wavePath = remember { Path() }
 
     val displayProgress = (if (isDragging) dragFraction else progress).coerceIn(0f, 1f)
+    val shouldAnimateWave = isPlaying && !isDragging && sliderStyle != PlayerSliderStyle.SLIM
 
-    val infiniteTransition = rememberInfiniteTransition(label = "squigglySeekWave")
-    val wavePhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2.0 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1500, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "wavePhase"
-    )
+    val wavePhase = if (shouldAnimateWave) {
+        val infiniteTransition = rememberInfiniteTransition(label = "squigglySeekWave")
+        infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = (2.0 * PI).toFloat(),
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1500, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "wavePhase"
+        ).value
+    } else {
+        0f
+    }
 
     val waveAmpFactor by animateFloatAsState(
-        targetValue = if (isPlaying && !isDragging && sliderStyle != PlayerSliderStyle.SLIM) 1f else 0f,
+        targetValue = if (shouldAnimateWave) 1f else 0f,
         animationSpec = tween(320),
         label = "waveAmp"
     )
@@ -405,13 +418,13 @@ fun EchoPlayerSeekBar(
             .fillMaxWidth()
             .height(38.dp)
             .onSizeChanged { widthPx = it.width.coerceAtLeast(1).toFloat() }
-            .pointerInput(onSeekProgress) {
+            .pointerInput(Unit) {
                 detectTapGestures { offset ->
                     val frac = (offset.x / widthPx).coerceIn(0f, 1f)
-                    onSeekProgress(frac)
+                    currentOnSeekProgress(frac)
                 }
             }
-            .pointerInput(onSeekProgress) {
+            .pointerInput(Unit) {
                 detectHorizontalDragGestures(
                     onDragStart = { offset ->
                         isDragging = true
@@ -419,7 +432,7 @@ fun EchoPlayerSeekBar(
                     },
                     onDragEnd = {
                         isDragging = false
-                        onSeekProgress(dragFraction)
+                        currentOnSeekProgress(dragFraction)
                     },
                     onDragCancel = {
                         isDragging = false
@@ -466,16 +479,16 @@ fun EchoPlayerSeekBar(
                 } else {
                     val amplitude = (if (sliderStyle == PlayerSliderStyle.SQUIGGLY) 4.2.dp.toPx() else 2.4.dp.toPx()) * waveAmpFactor
                     val wavelength = if (sliderStyle == PlayerSliderStyle.SQUIGGLY) 26.dp.toPx() else 44.dp.toPx()
-                    val path = Path()
+                    wavePath.reset()
                     val step = 4f
                     var x = 0f
                     while (x <= activeX) {
                         val y = centerY + amplitude * sin((x / wavelength) * 2.0 * PI + wavePhase).toFloat()
-                        if (x == 0f) path.moveTo(x, y) else path.lineTo(x, y)
+                        if (x == 0f) wavePath.moveTo(x, y) else wavePath.lineTo(x, y)
                         x += step
                     }
                     drawPath(
-                        path = path,
+                        path = wavePath,
                         color = activeColor,
                         style = Stroke(width = trackStroke, cap = StrokeCap.Round)
                     )

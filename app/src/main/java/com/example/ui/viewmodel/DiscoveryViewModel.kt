@@ -1,5 +1,6 @@
 package com.example.ui.viewmodel
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.LiquidAppContainer
@@ -40,6 +41,7 @@ enum class SearchFilter(val label: String) {
     LOCAL("Local")
 }
 
+@Immutable
 sealed interface VibeDjUiState {
     data object Idle : VibeDjUiState
     data object Loading : VibeDjUiState
@@ -47,6 +49,7 @@ sealed interface VibeDjUiState {
     data class Error(val message: String, val lastPrompt: String) : VibeDjUiState
 }
 
+@Immutable
 sealed interface DetailOverlayState {
     data object None : DetailOverlayState
     data class Album(
@@ -66,6 +69,7 @@ sealed interface DetailOverlayState {
     ) : DetailOverlayState
 }
 
+@Immutable
 data class DiscoveryUiState(
     val selectedHomeMood: String = "All",
     val isLoadingHome: Boolean = true,
@@ -118,6 +122,7 @@ class DiscoveryViewModel(
 
     private var searchDebounceJob: Job? = null
     private var detailLoadJob: Job? = null
+    private var homeLoadJob: Job? = null
 
     init {
         observeEchoHomeSettings()
@@ -133,6 +138,7 @@ class DiscoveryViewModel(
                         s.contentLanguage,
                         s.hideExplicit,
                         s.hideVideoSongs,
+                        s.hideYoutubeShorts,
                         s.randomizeHomeOrder,
                         s.quickPicksMode,
                         s.showHomeHeroCarousel,
@@ -158,7 +164,8 @@ class DiscoveryViewModel(
     }
 
     fun loadHomeShelves() {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        homeLoadJob?.cancel()
+        homeLoadJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             _uiState.update { it.copy(isLoadingHome = true, homeError = null) }
             val settings = container.preferencesRepository.soundLabSettings.first()
             container.musicRepository.applyEchoProviderSettings(settings)
@@ -180,8 +187,11 @@ class DiscoveryViewModel(
 
             fun filterEchoTracks(tracks: List<Track>): List<Track> {
                 return tracks.filter { t ->
+                    val isLikelyShort = t.title.contains("#short", ignoreCase = true) ||
+                        (t.isVideoSong && t.durationMs in 1L..60_000L)
                     (!settings.hideExplicit || !t.explicit) &&
                         (!settings.hideVideoSongs || !t.isVideoSong) &&
+                        (!settings.hideYoutubeShorts || !isLikelyShort) &&
                         blockedArtists.none { blocked -> t.artist.lowercase().contains(blocked) }
                 }
             }
@@ -294,10 +304,11 @@ class DiscoveryViewModel(
                 // Echo Music Keep Listening & Forgotten Favorites shelves from stored history
                 val keepListening = recent.drop(1).take(12)
                 val recentSet = recentIds.take(4).toSet()
+                val dailySeed = java.time.LocalDate.now().toEpochDay()
                 val forgotten = storedTracks
                     .map { it.toDomain() }
                     .filterNot { it.id in recentSet }
-                    .shuffled()
+                    .shuffled(kotlin.random.Random(dailySeed))
                     .take(12)
 
                 _uiState.update {

@@ -11,6 +11,7 @@ import com.example.data.repository.UnifiedMusicRepository
 import com.example.domain.model.AudioQuality
 import com.example.domain.model.Track
 import com.example.player.PlaybackDspBridge
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,6 +50,7 @@ class OfflineDownloadManager(
         }
 
         _activeProgress.update { it + (track.id to 0.04f) }
+        var tempFile: File? = null
         try {
             val resolved = musicRepository.resolvePlaybackStream(track, quality)
             val url = resolved?.uri ?: track.bestPlaybackUri(quality)
@@ -84,7 +86,8 @@ class OfflineDownloadManager(
                 mime.contains("webm") || mime.contains("opus") -> "webm"
                 else -> "m4a"
             }
-            val tempFile = File(downloadsDir, "$safeId.$ext.part")
+            val partFile = File(downloadsDir, "$safeId.$ext.part")
+            tempFile = partFile
             val outFile = File(downloadsDir, "$safeId.$ext")
 
             val clen = resolved?.contentLength
@@ -95,7 +98,7 @@ class OfflineDownloadManager(
                     trackId = track.id,
                     manifestUrl = url,
                     headers = headers,
-                    outFile = tempFile
+                    outFile = partFile
                 )
             } else if (isYouTubeMedia && clen != null && clen > 0L) {
                 downloadChunked(
@@ -104,21 +107,21 @@ class OfflineDownloadManager(
                     totalBytes = clen,
                     chunkSize = PlayerClient.rangeBytesFor(url),
                     headers = headers,
-                    outFile = tempFile
+                    outFile = partFile
                 )
             } else {
                 downloadSinglePass(
                     trackId = track.id,
                     url = url,
                     headers = headers,
-                    outFile = tempFile
+                    outFile = partFile
                 )
             }
 
             if (outFile.exists()) outFile.delete()
-            if (!tempFile.renameTo(outFile)) {
-                tempFile.copyTo(outFile, overwrite = true)
-                tempFile.delete()
+            if (!partFile.renameTo(outFile)) {
+                partFile.copyTo(outFile, overwrite = true)
+                partFile.delete()
             }
 
             val savedTrack = track.copy(downloadedFilePath = outFile.absolutePath)
@@ -133,7 +136,12 @@ class OfflineDownloadManager(
             )
             _activeProgress.update { it - track.id }
             Result.success(outFile.absolutePath)
+        } catch (ce: CancellationException) {
+            tempFile?.let { f -> runCatching { if (f.exists()) f.delete() } }
+            _activeProgress.update { it - track.id }
+            throw ce
         } catch (e: Exception) {
+            tempFile?.let { f -> runCatching { if (f.exists()) f.delete() } }
             Log.e(TAG, "Download failed for ${track.title}", e)
             _activeProgress.update { it - track.id }
             Result.failure(e)
@@ -221,7 +229,8 @@ class OfflineDownloadManager(
         trackId: String,
         manifestUrl: String,
         headers: Map<String, String>,
-        outFile: File
+        outFile: File,
+        depth: Int = 0
     ) {
         val manifestReq = Request.Builder().url(manifestUrl).apply {
             headers.forEach { (k, v) -> header(k, v) }
@@ -231,8 +240,62 @@ class OfflineDownloadManager(
             resp.body?.string().orEmpty()
         }
         val baseUri = java.net.URI(manifestUrl)
-        val segmentUrls = manifestBody.lines()
-            .map { it.trim() }
+        val lines = manifestBody.lines().map { it.trim() }
+
+        // If this is a Master Playlist (EXT-X-STREAM-INF / EXT-X-MEDIA audio), resolve the best media playlist first
+        if (depth < 2 && lines.any { it.startsWith("#EXT-X-STREAM-INF", ignoreCase = true) }) {
+            // Prefer dedicated audio rendition if declared via EXT-X-MEDIA:TYPE=AUDIO
+            val audioMediaUri = lines
+                .filter { it.startsWith("#EXT-X-MEDIA", ignoreCase = true) && it.contains("TYPE=AUDIO", ignoreCase = true) }
+                .mapNotNull { line ->
+                    Regex("""URI="([^"]+)"""").find(line)?.groupValues?.getOrNull(1)
+                }
+                .firstOrNull()
+
+            val bestVariantUri = if (!audioMediaUri.isNullOrBlank()) {
+                audioMediaUri
+            } else {
+                var bestUrl: String? = null
+                var bestBandwidth = -1L
+                var i = 0
+                while (i < lines.size) {
+                    val line = lines[i]
+                    if (line.startsWith("#EXT-X-STREAM-INF", ignoreCase = true)) {
+                        val bw = Regex("""BANDWIDTH=(\d+)""").find(line)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
+                        val nextUrl = ((i + 1) until lines.size)
+                            .asSequence()
+                            .map { lines[it] }
+                            .firstOrNull { it.isNotBlank() && !it.startsWith("#") }
+                        if (!nextUrl.isNullOrBlank() && bw >= bestBandwidth) {
+                            bestBandwidth = bw
+                            bestUrl = nextUrl
+                        }
+                    }
+                    i++
+                }
+                bestUrl
+            }
+
+            if (!bestVariantUri.isNullOrBlank()) {
+                val resolvedVariant = if (bestVariantUri.startsWith("http://") || bestVariantUri.startsWith("https://")) {
+                    bestVariantUri
+                } else {
+                    baseUri.resolve(bestVariantUri).toString()
+                }
+                downloadHlsSegments(trackId, resolvedVariant, headers, outFile, depth + 1)
+                return
+            }
+        }
+
+        // Guard against DRM/AES encrypted HLS streams whose raw ciphertext would not play offline
+        val hasEncryptedKey = lines.any {
+            it.startsWith("#EXT-X-KEY", ignoreCase = true) && !it.contains("METHOD=NONE", ignoreCase = true)
+        }
+        if (hasEncryptedKey) {
+            throw IllegalStateException("Encrypted HLS stream cannot be downloaded offline directly.")
+        }
+
+        val segmentUrls = lines
             .filter { it.isNotBlank() && !it.startsWith("#") }
             .map { line ->
                 if (line.startsWith("http://") || line.startsWith("https://")) line

@@ -1,7 +1,9 @@
 package com.example.ui.viewmodel
 
+import android.webkit.CookieManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import coil.imageLoader
 import com.example.core.LiquidAppContainer
 import com.example.data.remote.EchoExtensionManager
 import com.example.domain.model.AudioQuality
@@ -15,10 +17,13 @@ import com.example.domain.model.ReverbPreset
 import com.example.domain.model.SoundLabSettings
 import com.example.player.LiquidAudioCache
 import com.example.player.PlaybackDspBridge
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -29,8 +34,10 @@ class SoundLabViewModel(
     private val container: LiquidAppContainer
 ) : ViewModel() {
 
-    val settings: StateFlow<SoundLabSettings> = container.preferencesRepository.soundLabSettings
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SoundLabSettings())
+    private val _settings = MutableStateFlow(SoundLabSettings())
+    val settings: StateFlow<SoundLabSettings> = _settings.asStateFlow()
+
+    private var persistSettingsJob: Job? = null
 
     val bandLabels: StateFlow<List<String>> = PlaybackDspBridge.soundLabController.bandLabels
     val hardwareAttached: StateFlow<Boolean> = PlaybackDspBridge.soundLabController.hardwareAttached
@@ -75,12 +82,39 @@ class SoundLabViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
+        viewModelScope.launch {
+            container.preferencesRepository.soundLabSettings.collect { s ->
+                if (persistSettingsJob?.isActive != true) {
+                    _settings.value = s
+                }
+            }
+        }
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             LiquidAudioCache.refreshCacheSize()
-            container.preferencesRepository.soundLabSettings.collect { s ->
-                container.musicRepository.applyEchoProviderSettings(s)
-                _activeVisitorData.value = container.musicRepository.getActiveVisitorData()
-            }
+            container.preferencesRepository.soundLabSettings
+                .map { s ->
+                    listOf(
+                        s.preferExtensionAudio,
+                        s.playbackEngine,
+                        s.forceOpusAudio,
+                        s.innerTubeCookie,
+                        s.visitorData,
+                        s.dataSyncId,
+                        s.contentCountry,
+                        s.contentLanguage,
+                        s.proxyEnabled,
+                        s.proxyUrl,
+                        s.addonsJson,
+                        s.losslessExtensionUrl,
+                        s.customExtensionUrl
+                    )
+                }
+                .distinctUntilChanged()
+                .collect {
+                    val s = container.preferencesRepository.soundLabSettings.first()
+                    container.musicRepository.applyEchoProviderSettings(s)
+                    _activeVisitorData.value = container.musicRepository.getActiveVisitorData()
+                }
         }
     }
 
@@ -259,6 +293,11 @@ class SoundLabViewModel(
     }
 
     fun disconnectYouTubeAccount() {
+        runCatching {
+            val cookieManager = CookieManager.getInstance()
+            cookieManager.removeAllCookies(null)
+            cookieManager.flush()
+        }
         updateSettings {
             it.copy(
                 innerTubeCookie = "",
@@ -273,7 +312,12 @@ class SoundLabViewModel(
     }
 
     fun clearImageCache() {
-        viewModelScope.launch {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val loader = container.appContext.imageLoader
+                loader.memoryCache?.clear()
+                loader.diskCache?.clear()
+            }
             val imageCacheDir = File(container.appContext.cacheDir, "image_cache")
             if (imageCacheDir.exists()) {
                 imageCacheDir.deleteRecursively()
@@ -299,7 +343,7 @@ class SoundLabViewModel(
     }
 
     fun updateMaxCacheSizeMb(sizeMb: Int) {
-        updateSettings { it.copy(maxCacheSizeMb = sizeMb.coerceIn(128, 4096)) }
+        updateSettingsDebounced(applyDsp = false) { it.copy(maxCacheSizeMb = sizeMb.coerceIn(128, 4096)) }
     }
 
     fun clearAudioCache() {
@@ -319,7 +363,7 @@ class SoundLabViewModel(
     }
 
     fun updateBandLevel(bandIndex: Int, levelDb: Float) {
-        updateSettings { current ->
+        updateSettingsDebounced { current ->
             val updatedBands = current.eqBandLevelsDb.toMutableList()
             if (bandIndex in updatedBands.indices) {
                 updatedBands[bandIndex] = levelDb.coerceIn(-12f, 12f)
@@ -332,7 +376,7 @@ class SoundLabViewModel(
     }
 
     fun updateBassBoost(strength: Int) {
-        updateSettings { it.copy(bassBoostStrength = strength.coerceIn(0, 1000)) }
+        updateSettingsDebounced { it.copy(bassBoostStrength = strength.coerceIn(0, 1000)) }
     }
 
     fun selectReverb(reverb: ReverbPreset) {
@@ -340,7 +384,7 @@ class SoundLabViewModel(
     }
 
     fun updateSpeed(speed: Float) {
-        updateSettings {
+        updateSettingsDebounced {
             it.copy(
                 playbackSpeed = speed.coerceIn(0.5f, 2.0f),
                 activeMagicPreset = MagicSoundPreset.NORMAL
@@ -349,7 +393,7 @@ class SoundLabViewModel(
     }
 
     fun updatePitch(pitch: Float) {
-        updateSettings {
+        updateSettingsDebounced {
             it.copy(
                 playbackPitch = pitch.coerceIn(0.5f, 2.0f),
                 activeMagicPreset = MagicSoundPreset.NORMAL
@@ -396,7 +440,7 @@ class SoundLabViewModel(
     }
 
     fun updateCrossfade(seconds: Int) {
-        updateSettings { it.copy(crossfadeSeconds = seconds.coerceIn(0, 12)) }
+        updateSettingsDebounced { it.copy(crossfadeSeconds = seconds.coerceIn(0, 12)) }
     }
 
     fun updateAudioQuality(quality: AudioQuality) {
@@ -434,7 +478,7 @@ class SoundLabViewModel(
     }
 
     fun updateGlassConfig(transform: (LiquidGlassConfig) -> LiquidGlassConfig) {
-        updateSettings { current ->
+        updateSettingsDebounced(applyDsp = false) { current ->
             val updated = transform(current.glassConfig).copy(
                 opticalPreset = GlassOpticalPreset.CUSTOM
             )
@@ -442,13 +486,39 @@ class SoundLabViewModel(
         }
     }
 
+    private fun updateSettingsDebounced(
+        delayMs: Long = 220L,
+        applyDsp: Boolean = true,
+        transform: (SoundLabSettings) -> SoundLabSettings
+    ) {
+        val next = transform(_settings.value)
+        _settings.value = next
+        if (applyDsp) {
+            PlaybackDspBridge.applySoundLab(next)
+        }
+        persistSettingsJob?.cancel()
+        persistSettingsJob = viewModelScope.launch {
+            delay(delayMs)
+            val snapshot = _settings.value
+            container.preferencesRepository.updateSoundLabSettings { snapshot }
+        }
+    }
+
     private fun updateSettings(transform: (SoundLabSettings) -> SoundLabSettings) {
+        persistSettingsJob?.cancel()
+        val optimistic = transform(_settings.value)
+        _settings.value = optimistic
+        PlaybackDspBridge.applySoundLab(optimistic)
         viewModelScope.launch {
+            var updatedSettings: SoundLabSettings? = null
             container.preferencesRepository.updateSoundLabSettings { current ->
                 val next = transform(current)
-                container.musicRepository.applyEchoProviderSettings(next)
-                PlaybackDspBridge.applySoundLab(next)
+                updatedSettings = next
                 next
+            }
+            updatedSettings?.let { next ->
+                _settings.value = next
+                PlaybackDspBridge.applySoundLab(next)
             }
         }
     }

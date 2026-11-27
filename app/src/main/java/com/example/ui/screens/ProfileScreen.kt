@@ -101,7 +101,6 @@ import com.example.domain.model.GlassOpticalPreset
 import com.example.domain.model.GlassQualityTier
 import com.example.domain.model.LiquidGlassConfig
 import com.example.domain.model.LyricsAlignStyle
-import com.example.domain.model.LyricsAnimationStyle
 import com.example.domain.model.PlayerBackgroundStyle
 import com.example.domain.model.PlayerLayoutStyle
 import com.example.domain.model.PlayerSliderStyle
@@ -310,13 +309,13 @@ fun ProfileScreen(
             }
         }
 
-        // 1. ACCOUNT, YOUTUBE SYNC & INTEGRATIONS
-        if (matchesSection(EchoSettingsSection.ACCOUNT, "account login youtube cookie sapisid visitor data sync discord lastfm listenbrainz scrobble profile")) {
+        // 1. ACCOUNT & YOUTUBE SYNC
+        if (matchesSection(EchoSettingsSection.ACCOUNT, "account login youtube cookie sapisid visitor data sync profile")) {
             item(key = "echo_account_section") {
                 SettingsGroupCard(
                     icon = Icons.Rounded.AccountCircle,
-                    title = "Account, YouTube Sync & Integrations",
-                    subtitle = "Profile, YouTube Music InnerTube login, Discord RPC & Scrobbling"
+                    title = "Account & YouTube Music Sync",
+                    subtitle = "Profile & YouTube Music InnerTube login"
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -486,20 +485,6 @@ fun ProfileScreen(
                             )
                         }
                     }
-
-                    SettingsToggleRow(
-                        title = "Discord Rich Presence",
-                        subtitle = "Broadcast your live now-playing song & artwork to Discord",
-                        checked = settings.discordRpcEnabled,
-                        onCheckedChange = { v -> onUpdateEchoSettings(null) { it.copy(discordRpcEnabled = v) } }
-                    )
-
-                    SettingsToggleRow(
-                        title = "Last.fm & ListenBrainz Scrobbling",
-                        subtitle = "Scrobble tracks after 50% or 30 seconds of playback",
-                        checked = settings.lastFmEnabled || settings.listenBrainzEnabled,
-                        onCheckedChange = { v -> onUpdateEchoSettings(null) { it.copy(lastFmEnabled = v, listenBrainzEnabled = v) } }
-                    )
                 }
             }
         }
@@ -593,17 +578,6 @@ fun ProfileScreen(
                         onCheckedChange = { v -> onUpdateEchoSettings(null) { it.copy(cropAlbumArt = v) } }
                     )
 
-                    Text("Lyrics Animation Style", style = MaterialTheme.typography.labelLarge, color = palette.secondaryGlow)
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(LyricsAnimationStyle.entries, key = { it.name }) { anim ->
-                            LiquidGlassChip(
-                                label = anim.label,
-                                selected = settings.lyricsAnimationStyle == anim,
-                                onClick = { onUpdateEchoSettings(null) { it.copy(lyricsAnimationStyle = anim) } }
-                            )
-                        }
-                    }
-
                     Text("Lyrics Text Position", style = MaterialTheme.typography.labelLarge, color = palette.secondaryGlow)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         LyricsAlignStyle.entries.forEach { align ->
@@ -682,12 +656,12 @@ fun ProfileScreen(
         }
 
         // 3. PLAYER & AUDIO ENGINE SETTINGS
-        if (matchesSection(EchoSettingsSection.PLAYER, "player audio quality wifi cellular lossless 320kbps crossfade automix gapless skip silence normalization loudness opus bit perfect usb dac bluetooth queue")) {
+        if (matchesSection(EchoSettingsSection.PLAYER, "player audio quality wifi cellular lossless 320kbps fade crossfade gapless skip silence normalization loudness opus bluetooth queue seek")) {
             item(key = "echo_player_audio_section") {
                 SettingsGroupCard(
                     icon = Icons.Rounded.GraphicEq,
                     title = "Player & Audio Engine",
-                    subtitle = "Streaming quality, Playback Engine, Crossfade, Normalization & USB-DAC"
+                    subtitle = "Streaming quality, Playback Engine, Smooth Fade & Normalization"
                 ) {
                     Text("Playback Stream Engine", style = MaterialTheme.typography.labelLarge, color = palette.secondaryGlow)
                     EchoPlaybackEngine.entries.forEach { engine ->
@@ -740,7 +714,7 @@ fun ProfileScreen(
                     )
 
                     GlassSliderRow(
-                        label = "Crossfade & AutoMix Duration",
+                        label = "Smooth Fade Transition Duration",
                         readout = if (settings.crossfadeSeconds == 0) "Off" else "${settings.crossfadeSeconds}s",
                         value = settings.crossfadeSeconds.toFloat(),
                         range = 0f..12f,
@@ -758,12 +732,6 @@ fun ProfileScreen(
                         subtitle = "Automatically fast-forward through silent passages in tracks",
                         checked = settings.skipSilenceEnabled,
                         onCheckedChange = { v -> onUpdateEchoSettings(null) { it.copy(skipSilenceEnabled = v) } }
-                    )
-                    SettingsToggleRow(
-                        title = "Instant Skip Silence",
-                        subtitle = "Zero-ramp immediate silence cutting",
-                        checked = settings.skipSilenceInstant,
-                        onCheckedChange = { v -> onUpdateEchoSettings(null) { it.copy(skipSilenceInstant = v) } }
                     )
                     SettingsToggleRow(
                         title = "Audio Volume Normalization",
@@ -788,12 +756,6 @@ fun ProfileScreen(
                         subtitle = "Prefer YouTube Music high-efficiency WebM/Opus 160kbps stream format",
                         checked = settings.forceOpusAudio,
                         onCheckedChange = { v -> onUpdateEchoSettings("Force Opus (itag 251) ${if (v) "ON" else "OFF"}") { it.copy(forceOpusAudio = v) } }
-                    )
-                    SettingsToggleRow(
-                        title = "Bit-Perfect USB-DAC Output",
-                        subtitle = "Bypass Android sample rate mixer when external USB DAC is attached",
-                        checked = settings.bitPerfectUsbDac,
-                        onCheckedChange = { v -> onUpdateEchoSettings(null) { it.copy(bitPerfectUsbDac = v) } }
                     )
                     SettingsToggleRow(
                         title = "Audio Hardware Offload",
@@ -848,6 +810,12 @@ fun ProfileScreen(
                         subtitle = "Prevent device screen timeout while Now Playing or Lyrics view is open",
                         checked = settings.keepScreenOn,
                         onCheckedChange = { v -> onUpdateEchoSettings(null) { it.copy(keepScreenOn = v) } }
+                    )
+                    SettingsToggleRow(
+                        title = "Show 10s Seek Buttons",
+                        subtitle = "Display quick -10s / +10s jump buttons in the Now Playing dock",
+                        checked = settings.showSeekButtons,
+                        onCheckedChange = { v -> onUpdateEchoSettings(null) { it.copy(showSeekButtons = v) } }
                     )
                 }
             }
@@ -1005,13 +973,6 @@ fun ProfileScreen(
                             )
                         }
                     }
-
-                    SettingsToggleRow(
-                        title = "Echo Brain Smart Queue Recommendations",
-                        subtitle = "Analyze listening momentum and auto-inject matching tracks",
-                        checked = settings.aiRecommendationsEnabled,
-                        onCheckedChange = { v -> onUpdateEchoSettings(null) { it.copy(aiRecommendationsEnabled = v) } }
-                    )
                 }
             }
         }
@@ -1203,12 +1164,6 @@ fun ProfileScreen(
                         subtitle = "Pause offline track downloads on metered cellular networks",
                         checked = settings.downloadOnWifiOnly,
                         onCheckedChange = { v -> onUpdateEchoSettings(null) { it.copy(downloadOnWifiOnly = v) } }
-                    )
-                    SettingsToggleRow(
-                        title = "Download with Metadata & Synced Lyrics",
-                        subtitle = "Cache LRC lyrics and high-res cover art alongside offline audio",
-                        checked = settings.downloadWithMetadata,
-                        onCheckedChange = { v -> onUpdateEchoSettings(null) { it.copy(downloadWithMetadata = v) } }
                     )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {

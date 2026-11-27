@@ -28,6 +28,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "LiquidAudioCache"
 const val LIQUID_RESOLVE_SCHEME = "liquid"
@@ -35,7 +36,7 @@ const val LIQUID_RESOLVE_HOST = "resolve"
 
 /**
  * Echo Music-grade Media3 Audio Cache & Stream Pipeline:
- * ResolvingDataSource (InnerTubeX / Echo Addon / JioSaavn JIT + Per-URL PlayerClient headers)
+ * ResolvingDataSource (SimpleCache hit check -> InnerTubeX / Echo Addon / JioSaavn JIT + Per-URL headers)
  *   -> CacheDataSource (SimpleCache with source-isolated cache keys)
  *   -> DefaultDataSource (Local File / Content / Network)
  *   -> ChunkedDataSource (512 KB / 1 MB bounded googlevideo ranges, anti-throttle + 403 reporter)
@@ -53,11 +54,29 @@ object LiquidAudioCache {
     @Volatile
     private var cacheDirRef: File? = null
 
+    private val urlHeadersMap = ConcurrentHashMap<String, Map<String, String>>()
+    private val pendingHlsRedirectTrackIds = ConcurrentHashMap.newKeySet<String>()
+
     private val _cacheSizeBytes = MutableStateFlow(0L)
     val cacheSizeBytes: StateFlow<Long> = _cacheSizeBytes.asStateFlow()
 
     private val _lastResolution = MutableStateFlow<Pair<String, StreamResolution>?>(null)
     val lastResolution: StateFlow<Pair<String, StreamResolution>?> = _lastResolution.asStateFlow()
+
+    fun registerUrlHeaders(url: String, headers: Map<String, String>) {
+        if (url.isBlank() || headers.isEmpty()) return
+        if (urlHeadersMap.size > 128) urlHeadersMap.clear()
+        urlHeadersMap[url] = headers
+    }
+
+    fun markHlsRedirectPending(trackId: String) {
+        if (trackId.isNotBlank()) pendingHlsRedirectTrackIds.add(trackId)
+    }
+
+    fun consumeHlsRedirectPending(trackId: String?): Boolean {
+        if (trackId.isNullOrBlank()) return false
+        return pendingHlsRedirectTrackIds.remove(trackId)
+    }
 
     @Synchronized
     fun getOrCreateCache(context: Context, maxCacheSizeMb: Int = 512): SimpleCache {
@@ -156,6 +175,17 @@ object LiquidAudioCache {
             if (uri.scheme == LIQUID_RESOLVE_SCHEME && uri.host == LIQUID_RESOLVE_HOST) {
                 val trackId = uri.lastPathSegment.orEmpty()
                 val quality = qualityProvider()
+
+                // 1. Check SimpleCache first so cached/seeking/replayed songs serve directly from disk offline!
+                val cachedKey = findCachedKeyForTrack(cache, trackId, quality, dataSpec.position)
+                if (cachedKey != null) {
+                    refreshCacheSize()
+                    return@Factory dataSpec.buildUpon()
+                        .setKey(cachedKey)
+                        .setUri(Uri.parse("https://cached.liquid.local/$cachedKey"))
+                        .build()
+                }
+
                 val resolution = runBlocking(Dispatchers.IO) {
                     val track = musicRepository.findRegisteredTrack(trackId)
                         ?: throw IOException("Track metadata unavailable for $trackId")
@@ -169,7 +199,14 @@ object LiquidAudioCache {
                     resolution.uri.contains(".m3u8", ignoreCase = true) ||
                     resolution.uri.contains("manifest.googlevideo.com", ignoreCase = true)
                 if (isHls) {
-                    throw HlsRedirectIOException(trackId = trackId, hlsUri = resolution.uri)
+                    if (resolution.headers.isNotEmpty()) {
+                        registerUrlHeaders(resolution.uri, resolution.headers)
+                    }
+                    throw HlsRedirectIOException(
+                        trackId = trackId,
+                        hlsUri = resolution.uri,
+                        headers = resolution.headers
+                    )
                 }
 
                 val resolvedUri = Uri.parse(resolution.uri)
@@ -187,6 +224,9 @@ object LiquidAudioCache {
                     }
                     putAll(matched)
                 }
+                if (headers.isNotEmpty()) {
+                    registerUrlHeaders(resolution.uri, headers)
+                }
                 // Source-isolated cache key prevents stale/wrong cached audio across provider or quality switches!
                 val isolatedCacheKey = "${trackId}_${resolution.resolvedBy.name}_${quality.name}"
                 dataSpec.buildUpon()
@@ -201,7 +241,21 @@ object LiquidAudioCache {
                     host.contains("googlevideo.com", ignoreCase = true) ||
                         host.contains("youtube.com", ignoreCase = true)
                 } == true
-                if (isYouTubeMediaUrl && dataSpec.httpRequestHeaders["User-Agent"].isNullOrBlank()) {
+                val storedHeaders = urlHeadersMap[rawUrl]
+                    ?: uri.host?.let { host ->
+                        urlHeadersMap.entries.firstOrNull { (k, _) ->
+                            runCatching { Uri.parse(k).host.equals(host, ignoreCase = true) }.getOrDefault(false)
+                        }?.value
+                    }
+                if (!storedHeaders.isNullOrEmpty()) {
+                    val merged = buildMap {
+                        putAll(storedHeaders)
+                        putAll(dataSpec.httpRequestHeaders)
+                    }
+                    dataSpec.buildUpon()
+                        .setHttpRequestHeaders(merged)
+                        .build()
+                } else if (isYouTubeMediaUrl && dataSpec.httpRequestHeaders["User-Agent"].isNullOrBlank()) {
                     val headers = buildMap {
                         putAll(dataSpec.httpRequestHeaders)
                         putAll(
@@ -218,14 +272,41 @@ object LiquidAudioCache {
             }
         }
     }
+
+    private fun findCachedKeyForTrack(
+        cache: SimpleCache,
+        trackId: String,
+        quality: AudioQuality,
+        position: Long
+    ): String? {
+        if (trackId.isBlank()) return null
+        return runCatching {
+            val prefix = "${trackId}_"
+            val qualitySuffix = "_${quality.name}"
+            val candidates = cache.keys.filter { it.startsWith(prefix) }
+            val ordered = candidates.filter { it.endsWith(qualitySuffix) } +
+                candidates.filterNot { it.endsWith(qualitySuffix) }
+            ordered.firstOrNull { key ->
+                val contentLength = cache.getContentMetadata(key).get("exo_len", -1L)
+                val checkPos = position.coerceAtLeast(0L)
+                if (contentLength > 0L && checkPos < contentLength) {
+                    val remaining = (contentLength - checkPos).coerceAtMost(4096L)
+                    cache.isCached(key, checkPos, remaining)
+                } else {
+                    cache.isCached(key, checkPos, 1L)
+                }
+            }
+        }.getOrNull()
+    }
 }
 
 /**
  * Thrown by [LiquidAudioCache] when a `liquid://resolve/{id}` item resolves to an HLS `.m3u8`
- * manifest so [com.example.ui.viewmodel.PlayerViewModel] seamlessly switches that item to
+ * manifest so [LiquidPlaybackService] seamlessly switches that item to
  * `MimeTypes.APPLICATION_M3U8` for ExoPlayer's `HlsMediaSource`.
  */
 class HlsRedirectIOException(
     val trackId: String,
-    val hlsUri: String
+    val hlsUri: String,
+    val headers: Map<String, String> = emptyMap()
 ) : IOException("Redirecting $trackId to HLS manifest")

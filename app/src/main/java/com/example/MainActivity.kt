@@ -1,6 +1,7 @@
 package com.example
 
 import android.app.Activity
+import android.content.Intent
 import android.graphics.Color as AndroidColor
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -32,12 +34,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -46,13 +51,17 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.Coil
 import com.example.core.LiquidAppContainer
 import com.example.core.configureAppCheck
 import com.example.domain.model.MainTab
@@ -78,6 +87,7 @@ import com.example.ui.screens.SearchScreen
 import com.example.ui.screens.SoundLabScreen
 import com.example.ui.screens.YouTubeLoginScreen
 import com.example.ui.theme.FrostWhite
+import com.example.ui.theme.LiquidDynamicPalette
 import com.example.ui.theme.LiquidMusicTheme
 import com.example.ui.theme.LocalLiquidPalette
 import com.example.ui.viewmodel.DetailOverlayState
@@ -86,11 +96,14 @@ import com.example.ui.viewmodel.LibraryViewModel
 import com.example.ui.viewmodel.PlayerViewModel
 import com.example.ui.viewmodel.ProfileViewModel
 import com.example.ui.viewmodel.SoundLabViewModel
+import com.example.widget.LiquidMusicWidgetProvider
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
+
+    private var expandPlayerSignal by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -104,16 +117,32 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT)
         )
 
+        if (intent?.getBooleanExtra(LiquidMusicWidgetProvider.EXTRA_EXPAND_NOW_PLAYING, false) == true) {
+            expandPlayerSignal++
+        }
+
         val container = LiquidAppContainer.getInstance(applicationContext)
+        Coil.setImageLoader(container.imageLoader)
         val factory = LiquidViewModelFactory(container)
 
         setContent {
-            LiquidMusicRoot(factory = factory)
+            LiquidMusicRoot(
+                factory = factory,
+                expandPlayerSignal = expandPlayerSignal
+            )
         }
 
         // Apply preferred high refresh rate after the initial SurfaceSyncGroup frame commits
         window.decorView.post {
             requestHighestRefreshRate()
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(LiquidMusicWidgetProvider.EXTRA_EXPAND_NOW_PLAYING, false)) {
+            expandPlayerSignal++
         }
     }
 
@@ -158,7 +187,10 @@ private class LiquidViewModelFactory(
 }
 
 @Composable
-private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
+private fun LiquidMusicRoot(
+    factory: ViewModelProvider.Factory,
+    expandPlayerSignal: Int = 0
+) {
     val playerViewModel: PlayerViewModel = viewModel(factory = factory)
     val discoveryViewModel: DiscoveryViewModel = viewModel(factory = factory)
     val libraryViewModel: LibraryViewModel = viewModel(factory = factory)
@@ -198,10 +230,24 @@ private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
     var selectedTab by rememberSaveable { mutableStateOf(MainTab.HOME) }
     var isFlowModeActive by rememberSaveable { mutableStateOf(false) }
     var isNowPlayingExpanded by rememberSaveable { mutableStateOf(false) }
+    var pendingWidgetExpand by remember { mutableStateOf(false) }
+    var fullPlayerDismissProgress by remember { mutableFloatStateOf(0f) }
     var pendingPlaylistTrack by remember { mutableStateOf<Track?>(null) }
     var showYouTubeLogin by remember { mutableStateOf(false) }
     var showAddonManager by remember { mutableStateOf(false) }
     var dnaTargetTrack by remember { mutableStateOf<Track?>(null) }
+
+    LaunchedEffect(expandPlayerSignal) {
+        if (expandPlayerSignal > 0) {
+            pendingWidgetExpand = true
+        }
+    }
+    LaunchedEffect(pendingWidgetExpand, playerState.currentTrack != null) {
+        if (pendingWidgetExpand && playerState.currentTrack != null) {
+            isNowPlayingExpanded = true
+            pendingWidgetExpand = false
+        }
+    }
 
     val downloadedIds = remember(downloadedPaths) { downloadedPaths.keys }
     val activeToastMessage = playerState.statusToast ?: settingsActionNotice
@@ -242,7 +288,7 @@ private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
     }
 
     LiquidMusicTheme(
-        targetPalette = playerState.palette,
+        targetPalette = if (soundLabSettings.dynamicThemeEnabled) playerState.palette else LiquidDynamicPalette(),
         glassQualityTier = soundLabSettings.glassQualityTier,
         glassConfig = soundLabSettings.glassConfig
     ) {
@@ -262,18 +308,56 @@ private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
             val mainBackdrop = rememberLayerBackdrop()
             val auroraBackdrop = rememberLayerBackdrop()
             val hasActiveTrack = playerState.currentTrack != null
+            val isFullPlayerVisible = isNowPlayingExpanded && hasActiveTrack
             val contentBottomPadding = if (hasActiveTrack) 192.dp else 118.dp
+            val density = LocalDensity.current
 
-            Box(modifier = Modifier.fillMaxSize()) {
-                // Scene Layer captured into mainBackdrop so floating chrome, dock & mini-player refract real scrolling content!
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .then(if (isBackdropReady) Modifier.layerBackdrop(mainBackdrop) else Modifier)
-                ) {
+            var miniPlayerBounds by remember { mutableStateOf<Rect?>(null) }
+            val playerExpandProgress = remember { Animatable(if (isFullPlayerVisible) 1f else 0f) }
+
+            LaunchedEffect(isFullPlayerVisible, hasActiveTrack) {
+                if (!hasActiveTrack) {
+                    isNowPlayingExpanded = false
+                    fullPlayerDismissProgress = 0f
+                    playerExpandProgress.snapTo(0f)
+                } else if (isFullPlayerVisible) {
+                    playerExpandProgress.animateTo(1f, MiniPlayerSpringSpecs.PlayerMorphExpand)
+                } else {
+                    playerExpandProgress.animateTo(0f, MiniPlayerSpringSpecs.PlayerMorphCollapse)
+                }
+            }
+
+            // iOS 26 Spring Depth Recess for the underlying Home Scene coupled directly to spring morph & pull-down drag
+            val effectiveExpansion = (playerExpandProgress.value.coerceIn(0f, 1f) * (1f - fullPlayerDismissProgress)).coerceIn(0f, 1f)
+            val sceneRecessScale = 1f - (0.055f * effectiveExpansion)
+            val sceneRecessCorner = (30f * effectiveExpansion).dp
+            val sceneRecessDim = 0.42f * effectiveExpansion
+            val tabBarDuckFraction = effectiveExpansion
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF04060B))
+            ) {
+                    // Scene Layer captured into mainBackdrop so floating chrome, dock & mini-player refract real scrolling content!
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                scaleX = sceneRecessScale
+                                scaleY = sceneRecessScale
+                                if (sceneRecessCorner > 0.5.dp) {
+                                    shape = RoundedCornerShape(sceneRecessCorner)
+                                    clip = true
+                                }
+                            }
+                            .then(if (isBackdropReady) Modifier.layerBackdrop(mainBackdrop) else Modifier)
+                    ) {
                     LiquidAuroraCanvas(
                         modifier = if (isBackdropReady) Modifier.layerBackdrop(auroraBackdrop) else Modifier,
-                        intensity = 0.95f
+                        intensity = 0.95f,
+                        pureBlack = soundLabSettings.pureBlackAmoled,
+                        animate = false
                     )
 
                     // Active Tab Screen receives non-cyclic auroraBackdrop so Sound Lab sliders, toggles & buttons refract live aurora
@@ -320,7 +404,8 @@ private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
                                                 dnaTargetTrack = track
                                                 playerViewModel.loadTrackDna(track)
                                             },
-                                            onExpandPlayer = { isNowPlayingExpanded = true }
+                                            onExpandPlayer = { isNowPlayingExpanded = true },
+                                            positionMsFlow = playerViewModel.positionMs
                                         )
                                     } else {
                                         HomeScreen(
@@ -531,6 +616,15 @@ private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
                             )
                         }
                     }
+
+                    // Soft depth veil over the recessed Home Screen during full player expansion
+                    if (sceneRecessDim > 0.01f) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = sceneRecessDim))
+                        )
+                    }
                 }
 
                 // Floating Apple iOS 26 Liquid Glass Status Toast Pill + Floating Dock
@@ -590,15 +684,34 @@ private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
                         ) {
                             val activeTrack = playerState.currentTrack
                             if (activeTrack != null) {
-                                Column {
+                                val pillVisibility = (1f - playerExpandProgress.value * 2.4f).coerceIn(0f, 1f)
+                                Column(
+                                    modifier = Modifier.graphicsLayer {
+                                        alpha = pillVisibility
+                                        val liftScale = 1f + 0.04f * (1f - pillVisibility)
+                                        scaleX = liftScale
+                                        scaleY = liftScale
+                                        translationY = -with(density) { 10.dp.toPx() } * (1f - pillVisibility)
+                                    }
+                                ) {
                                     FloatingLiquidMiniPlayer(
                                         playerState = playerState,
                                         isLiked = likedTrackIds.contains(activeTrack.id),
-                                        onExpand = { isNowPlayingExpanded = true },
+                                        swipeToSongEnabled = soundLabSettings.swipeToSongEnabled,
+                                        onExpand = {
+                                            fullPlayerDismissProgress = 0f
+                                            isNowPlayingExpanded = true
+                                        },
                                         onTogglePlayPause = playerViewModel::togglePlayPause,
                                         onSkipNext = playerViewModel::skipNext,
                                         onSkipPrevious = playerViewModel::skipPrevious,
-                                        onToggleLike = { playerViewModel.toggleLike(activeTrack) }
+                                        onToggleLike = { playerViewModel.toggleLike(activeTrack) },
+                                        onBoundsInRootChanged = { bounds ->
+                                            if (bounds.width > 1f && bounds.height > 1f) {
+                                                miniPlayerBounds = bounds
+                                            }
+                                        },
+                                        positionMsFlow = playerViewModel.positionMs
                                     )
                                     Spacer(modifier = Modifier.height(10.dp))
                                 }
@@ -611,59 +724,72 @@ private fun LiquidMusicRoot(factory: ViewModelProvider.Factory) {
                                 if (isDetailOverlayOpen) discoveryViewModel.closeDetailOverlay()
                                 selectedTab = it
                             },
-                            modifier = Modifier.zIndex(2f)
+                            modifier = Modifier
+                                .zIndex(2f)
+                                .graphicsLayer {
+                                    val duckPx = with(density) { 108.dp.toPx() }
+                                    translationY = duckPx * tabBarDuckFraction
+                                    alpha = (1f - tabBarDuckFraction * 1.15f).coerceIn(0f, 1f)
+                                    val s = 1f - (0.04f * tabBarDuckFraction)
+                                    scaleX = s
+                                    scaleY = s
+                                }
                         )
                     }
                 }
 
-                // Full-Bleed Cover Art Now Playing Overlay
-                AnimatedVisibility(
-                    visible = isNowPlayingExpanded && playerState.currentTrack != null,
-                    enter = slideInVertically(
-                        initialOffsetY = { it },
-                        animationSpec = MiniPlayerSpringSpecs.SheetExpandOffset
-                    ) + fadeIn(spring(stiffness = 560f)),
-                    exit = slideOutVertically(
-                        targetOffsetY = { it },
-                        animationSpec = MiniPlayerSpringSpecs.SheetDismissOffset
-                    ) + fadeOut(spring(stiffness = 640f))
-                ) {
-                    val activeTrack = playerState.currentTrack
-                    if (activeTrack != null) {
-                        FullBleedNowPlayingScreen(
-                            playerState = playerState,
-                            soundLabSettings = soundLabSettings,
-                            isLiked = likedTrackIds.contains(activeTrack.id),
-                            isDownloaded = downloadedIds.contains(activeTrack.id),
-                            downloadProgress = downloadProgress[activeTrack.id],
-                            onDismiss = { isNowPlayingExpanded = false },
-                            onTogglePlayPause = playerViewModel::togglePlayPause,
-                            onSkipNext = playerViewModel::skipNext,
-                            onSkipPrevious = playerViewModel::skipPrevious,
-                            onSeekTo = playerViewModel::seekTo,
-                            onRetryTrack = playerViewModel::retryCurrentTrack,
-                            onStartRadio = playerViewModel::startRadio,
-                            onToggleAutoPlayRadio = playerViewModel::toggleAutoPlayRadio,
-                            onSaveQueueAsPlaylist = playerViewModel::saveQueueAsPlaylist,
-                            onToggleLyricsTranslation = { playerViewModel.toggleLyricsTranslation() },
-                            onToggleShuffle = playerViewModel::toggleShuffle,
-                            onCycleRepeat = playerViewModel::cycleRepeatMode,
-                            onToggleLike = { playerViewModel.toggleLike(activeTrack) },
-                            onToggleDownload = { playerViewModel.toggleDownload(activeTrack) },
-                            onAddToPlaylist = { pendingPlaylistTrack = it },
-                            onOpenSoundLab = { selectedTab = MainTab.SOUND_LAB },
-                            onJumpQueueIndex = playerViewModel::jumpToQueueIndex,
-                            onMoveQueueItem = playerViewModel::moveQueueItem,
-                            onRemoveQueueItem = playerViewModel::removeQueueItem,
-                            onOpenMusicDna = {
-                                dnaTargetTrack = activeTrack
-                                playerViewModel.loadTrackDna(activeTrack)
-                            },
-                            onAdjustLyricsOffset = soundLabViewModel::adjustLyricsOffset,
-                            onResetLyricsOffset = soundLabViewModel::resetLyricsOffset,
-                            onSearchLyrics = playerViewModel::searchLyricsCandidates,
-                            onApplyManualLyrics = playerViewModel::applyManualLyrics
-                        )
+                // Full-Bleed Cover Art Now Playing Overlay (Spring-Morphed from Mini-Player Pill)
+                val showFullPlayerOverlay = hasActiveTrack && (isFullPlayerVisible || playerExpandProgress.value > 0.015f)
+                if (showFullPlayerOverlay) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .zIndex(5f)
+                    ) {
+                        val activeTrack = playerState.currentTrack
+                        if (activeTrack != null) {
+                            FullBleedNowPlayingScreen(
+                                playerState = playerState,
+                                soundLabSettings = soundLabSettings,
+                                isLiked = likedTrackIds.contains(activeTrack.id),
+                                isDownloaded = downloadedIds.contains(activeTrack.id),
+                                downloadProgress = downloadProgress[activeTrack.id],
+                                onDismiss = {
+                                    fullPlayerDismissProgress = 0f
+                                    isNowPlayingExpanded = false
+                                },
+                                onTogglePlayPause = playerViewModel::togglePlayPause,
+                                onSkipNext = playerViewModel::skipNext,
+                                onSkipPrevious = playerViewModel::skipPrevious,
+                                onSeekTo = playerViewModel::seekTo,
+                                onRetryTrack = playerViewModel::retryCurrentTrack,
+                                onStartRadio = playerViewModel::startRadio,
+                                onToggleAutoPlayRadio = playerViewModel::toggleAutoPlayRadio,
+                                onSaveQueueAsPlaylist = playerViewModel::saveQueueAsPlaylist,
+                                onToggleLyricsTranslation = { playerViewModel.toggleLyricsTranslation() },
+                                onToggleShuffle = playerViewModel::toggleShuffle,
+                                onCycleRepeat = playerViewModel::cycleRepeatMode,
+                                onToggleLike = { playerViewModel.toggleLike(activeTrack) },
+                                onToggleDownload = { playerViewModel.toggleDownload(activeTrack) },
+                                onAddToPlaylist = { pendingPlaylistTrack = it },
+                                onOpenSoundLab = { selectedTab = MainTab.SOUND_LAB },
+                                onJumpQueueIndex = playerViewModel::jumpToQueueIndex,
+                                onMoveQueueItem = playerViewModel::moveQueueItem,
+                                onRemoveQueueItem = playerViewModel::removeQueueItem,
+                                onOpenMusicDna = {
+                                    dnaTargetTrack = activeTrack
+                                    playerViewModel.loadTrackDna(activeTrack)
+                                },
+                                onAdjustLyricsOffset = soundLabViewModel::adjustLyricsOffset,
+                                onResetLyricsOffset = soundLabViewModel::resetLyricsOffset,
+                                onSearchLyrics = playerViewModel::searchLyricsCandidates,
+                                onApplyManualLyrics = playerViewModel::applyManualLyrics,
+                                onDismissDragProgress = { progress -> fullPlayerDismissProgress = progress },
+                                expandProgress = playerExpandProgress.value,
+                                originBounds = miniPlayerBounds,
+                                positionMsFlow = playerViewModel.positionMs
+                            )
+                        }
                     }
                 }
 

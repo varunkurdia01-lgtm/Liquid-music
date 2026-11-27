@@ -1,6 +1,9 @@
 package com.example.core
 
 import android.content.Context
+import coil.ImageLoader
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
 import com.example.data.local.AuthRepository
 import com.example.data.local.BackupRestoreManager
 import com.example.data.local.LiquidDao
@@ -22,21 +25,80 @@ import com.example.data.remote.innertube.InnerTubeMusicProvider
 import com.example.data.remote.innertube.InnerTubeXResolver
 import com.example.data.repository.UnifiedMusicRepository
 import com.example.player.PaletteExtractor
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
+import java.io.File
+import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.ProxySelector
+import java.net.SocketAddress
+import java.net.URI
 import java.util.concurrent.TimeUnit
 
 class LiquidAppContainer(context: Context) {
     val appContext: Context = context.applicationContext
+    val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @Volatile
+    private var activeProxy: Proxy = Proxy.NO_PROXY
+
+    private val dynamicProxySelector = object : ProxySelector() {
+        override fun select(uri: URI?): MutableList<Proxy> = mutableListOf(activeProxy)
+        override fun connectFailed(uri: URI?, sa: SocketAddress?, ioe: IOException?) {}
+    }
+
+    fun configureGlobalProxy(enabled: Boolean, proxyUrl: String) {
+        if (!enabled || proxyUrl.isBlank()) {
+            activeProxy = Proxy.NO_PROXY
+            return
+        }
+        activeProxy = runCatching {
+            val trimmed = proxyUrl.trim()
+            val normalized = if (trimmed.contains("://")) trimmed else "http://$trimmed"
+            val parsed = URI(normalized)
+            val host = parsed.host ?: return@runCatching Proxy.NO_PROXY
+            val type = if (parsed.scheme.equals("socks", true) || parsed.scheme.equals("socks5", true)) {
+                Proxy.Type.SOCKS
+            } else {
+                Proxy.Type.HTTP
+            }
+            val port = if (parsed.port > 0) parsed.port else if (type == Proxy.Type.SOCKS) 1080 else 8080
+            Proxy(type, InetSocketAddress(host, port))
+        }.getOrDefault(Proxy.NO_PROXY)
+    }
 
     val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .proxySelector(dynamicProxySelector)
             .connectionPool(ConnectionPool(15, 10, TimeUnit.MINUTES))
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(25, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .followRedirects(true)
+            .build()
+    }
+
+    val imageLoader: ImageLoader by lazy {
+        ImageLoader.Builder(appContext)
+            .okHttpClient { okHttpClient }
+            .memoryCache {
+                MemoryCache.Builder(appContext)
+                    .maxSizePercent(0.25)
+                    .build()
+            }
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(File(appContext.cacheDir, "image_cache"))
+                    .maxSizeBytes(150L * 1024 * 1024)
+                    .build()
+            }
+            .respectCacheHeaders(false)
+            .allowHardware(true)
             .build()
     }
 
@@ -73,7 +135,8 @@ class LiquidAppContainer(context: Context) {
             extensionManager = extensionManager,
             audiusFallback = audiusFallback,
             soundCloudFallback = soundCloudFallback,
-            bilibiliFallback = bilibiliFallback
+            bilibiliFallback = bilibiliFallback,
+            onProxyConfigured = ::configureGlobalProxy
         )
     }
 
@@ -105,7 +168,7 @@ class LiquidAppContainer(context: Context) {
 
     val vibeDjRepository: VibeDjRepository by lazy { VibeDjRepository(appContext, musicRepository) }
     val musicDnaRepository: MusicDnaRepository by lazy { MusicDnaRepository(okHttpClient) }
-    val paletteExtractor: PaletteExtractor by lazy { PaletteExtractor(appContext) }
+    val paletteExtractor: PaletteExtractor by lazy { PaletteExtractor(appContext, imageLoader) }
 
     init {
         // Prewarm Echo Music's InnerTubeX cipher & player_configs store asynchronously off the main thread

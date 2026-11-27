@@ -20,9 +20,12 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -45,13 +48,15 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -62,12 +67,15 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.size.Precision
 import com.example.domain.model.GlassQualityTier
 import com.example.ui.theme.FrostWhite
 import com.example.ui.theme.LocalGlassQuality
@@ -117,14 +125,82 @@ object AppleGlassTokens {
 @Composable
 fun LiquidAuroraCanvas(
     modifier: Modifier = Modifier,
-    intensity: Float = 1f
+    intensity: Float = 1f,
+    pureBlack: Boolean = true,
+    animate: Boolean = false
 ) {
     val palette = LocalLiquidPalette.current
     val glassTier = LocalGlassQuality.current
-    val animateDrift = glassTier != GlassQualityTier.BATTERY_SAVER
+    val animateDrift = animate && glassTier != GlassQualityTier.BATTERY_SAVER
+    val baseBg = if (pureBlack) ObsidianBlack else Color(0xFF0A0F1E)
+
+    if (!animateDrift) {
+        val phase = 0.7f
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(baseBg)
+                .drawWithCache {
+                    val w = size.width
+                    val h = size.height
+                    if (w <= 0f || h <= 0f) {
+                        onDrawBehind { }
+                    } else {
+                        val c1 = Offset(
+                            x = w * (0.22f + 0.14f * cos(phase)),
+                            y = h * (0.14f + 0.08f * sin(phase * 0.8f))
+                        )
+                        val r1 = w * 0.95f
+                        val b1 = Brush.radialGradient(
+                            colors = listOf(
+                                palette.deepAurora.copy(alpha = 0.64f * intensity),
+                                palette.deepAurora.copy(alpha = 0.22f * intensity),
+                                Color.Transparent
+                            ),
+                            center = c1,
+                            radius = r1
+                        )
+                        val c2 = Offset(
+                            x = w * (0.82f + 0.12f * sin(phase * 0.9f)),
+                            y = h * (0.28f + 0.10f * cos(phase * 0.7f))
+                        )
+                        val r2 = w * 0.82f
+                        val b2 = Brush.radialGradient(
+                            colors = listOf(
+                                palette.secondaryGlow.copy(alpha = 0.36f * intensity),
+                                palette.secondaryGlow.copy(alpha = 0.12f * intensity),
+                                Color.Transparent
+                            ),
+                            center = c2,
+                            radius = r2
+                        )
+                        val c3 = Offset(
+                            x = w * (0.45f + 0.18f * cos(phase * 0.6f + 1.4f)),
+                            y = h * (0.82f + 0.08f * sin(phase * 0.5f))
+                        )
+                        val r3 = w * 0.85f
+                        val b3 = Brush.radialGradient(
+                            colors = listOf(
+                                palette.primaryGlow.copy(alpha = 0.28f * intensity),
+                                palette.deepAurora.copy(alpha = 0.14f * intensity),
+                                Color.Transparent
+                            ),
+                            center = c3,
+                            radius = r3
+                        )
+                        onDrawBehind {
+                            drawCircle(brush = b1, radius = r1, center = c1)
+                            drawCircle(brush = b2, radius = r2, center = c2)
+                            drawCircle(brush = b3, radius = r3, center = c3)
+                        }
+                    }
+                }
+        )
+        return
+    }
 
     val transition = rememberInfiniteTransition(label = "auroraMesh")
-    val driftPhase by transition.animateFloat(
+    val phase by transition.animateFloat(
         initialValue = 0f,
         targetValue = (2.0 * PI).toFloat(),
         animationSpec = infiniteRepeatable(
@@ -133,12 +209,11 @@ fun LiquidAuroraCanvas(
         ),
         label = "auroraDrift"
     )
-    val phase = if (animateDrift) driftPhase else 0.7f
 
     Canvas(
         modifier = modifier
             .fillMaxSize()
-            .background(ObsidianBlack)
+            .background(baseBg)
     ) {
         val w = size.width
         val h = size.height
@@ -221,11 +296,10 @@ fun LiquidGlassSurface(
     blurOverrideDp: Float? = null,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val palette = LocalLiquidPalette.current
     val glassTier = LocalGlassQuality.current
     val glassConfig = LocalLiquidGlassConfig.current
     val backdrop = backdropOverride ?: LocalLiquidBackdrop.current
-    val shape: Shape = RoundedCornerShape(cornerRadius)
+    val shape: Shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
 
     val useRealBackdrop = useRefractionShell &&
         backdrop != null &&
@@ -280,42 +354,49 @@ fun LiquidGlassSurface(
     } else {
         // Lightweight Apple iOS 26 dark frosted material for high-frequency scrolling lists & Battery Saver
         val subtleAccent = highlightAccent ?: Color.White
+        val bgBrush = remember(tintColor, surfaceAlpha) {
+            Brush.verticalGradient(
+                colors = listOf(
+                    tintColor.copy(alpha = (surfaceAlpha + 0.38f).coerceIn(0.58f, 0.84f)),
+                    tintColor.copy(alpha = (surfaceAlpha + 0.30f).coerceIn(0.50f, 0.78f))
+                )
+            )
+        }
+        val borderBrush = remember(subtleAccent) {
+            Brush.linearGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = 0.28f),
+                    subtleAccent.copy(alpha = 0.12f),
+                    Color.White.copy(alpha = 0.06f),
+                    Color.White.copy(alpha = 0.16f)
+                )
+            )
+        }
         Box(
             modifier = modifier
                 .clip(shape)
-                .background(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            tintColor.copy(alpha = (surfaceAlpha + 0.38f).coerceIn(0.58f, 0.84f)),
-                            tintColor.copy(alpha = (surfaceAlpha + 0.30f).coerceIn(0.50f, 0.78f))
-                        )
-                    )
-                )
-                .drawWithContent {
-                    drawContent()
+                .background(brush = bgBrush)
+                .drawWithCache {
                     val rPx = cornerRadius.toPx()
-                    drawRoundRect(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(
-                                Color.White.copy(alpha = 0.07f),
-                                Color.Transparent
-                            ),
-                            startY = 0f,
-                            endY = size.height * 0.38f
+                    val sheen = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.07f),
+                            Color.Transparent
                         ),
-                        cornerRadius = CornerRadius(rPx, rPx)
+                        startY = 0f,
+                        endY = size.height * 0.38f
                     )
+                    onDrawWithContent {
+                        drawContent()
+                        drawRoundRect(
+                            brush = sheen,
+                            cornerRadius = CornerRadius(rPx, rPx)
+                        )
+                    }
                 }
                 .border(
                     width = 0.65.dp,
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.28f),
-                            subtleAccent.copy(alpha = 0.12f),
-                            Color.White.copy(alpha = 0.06f),
-                            Color.White.copy(alpha = 0.16f)
-                        )
-                    ),
+                    brush = borderBrush,
                     shape = shape
                 ),
             content = content
@@ -339,7 +420,7 @@ fun LiquidGlassButton(
     accentGlow: Boolean = false,
     tintColor: Color? = null,
     enabled: Boolean = true,
-    useLiveBackdrop: Boolean = true,
+    useLiveBackdrop: Boolean = false,
     content: @Composable BoxScope.() -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
@@ -347,6 +428,7 @@ fun LiquidGlassButton(
     val glassConfig = LocalLiquidGlassConfig.current
     val glassTier = LocalGlassQuality.current
     val backdrop = LocalLiquidBackdrop.current
+    val currentOnClick by rememberUpdatedState(onClick)
 
     var isPressed by remember { mutableStateOf(false) }
     var touchOffset by remember { mutableStateOf(Offset.Unspecified) }
@@ -366,7 +448,7 @@ fun LiquidGlassButton(
         label = "interactiveHighlightAlpha"
     )
 
-    val shape = RoundedCornerShape(cornerRadius)
+    val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
     val resolvedTint = tintColor ?: if (accentGlow) palette.primaryGlow else null
     val isTinted = resolvedTint != null
 
@@ -377,10 +459,12 @@ fun LiquidGlassButton(
 
     val gestureModifier = modifier
         .onSizeChanged { buttonSize = it }
-        .pointerInput(enabled, onClick) {
+        .pointerInput(enabled) {
             if (!enabled) return@pointerInput
+            val touchSlop = viewConfiguration.touchSlop
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
+                val startPos = down.position
                 isPressed = true
                 touchOffset = down.position
                 var cancelled = false
@@ -388,17 +472,24 @@ fun LiquidGlassButton(
                     val event = awaitPointerEvent()
                     val change = event.changes.firstOrNull() ?: break
                     touchOffset = change.position
+                    if (change.isConsumed || (change.position - startPos).getDistance() > touchSlop) {
+                        cancelled = true
+                        isPressed = false
+                    }
                     if (!change.pressed) break
                     val outOfBounds = change.position.x < -24f ||
                         change.position.y < -24f ||
                         change.position.x > size.width + 24f ||
                         change.position.y > size.height + 24f
-                    if (outOfBounds) cancelled = true
+                    if (outOfBounds) {
+                        cancelled = true
+                        isPressed = false
+                    }
                 }
                 isPressed = false
                 if (!cancelled) {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onClick()
+                    currentOnClick()
                 }
             }
         }
@@ -548,7 +639,7 @@ fun LiquidGlassIconButton(
     iconTint: Color = FrostWhite,
     tinted: Boolean = false,
     tintColor: Color? = null,
-    useLiveBackdrop: Boolean = true
+    useLiveBackdrop: Boolean = false
 ) {
     LiquidGlassButton(
         onClick = onClick,
@@ -593,6 +684,10 @@ fun LiquidGlassSlider(
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
 
+    val currentOnValueChange by rememberUpdatedState(onValueChange)
+    val currentOnValueChangeFinished by rememberUpdatedState(onValueChangeFinished)
+    val currentValueRange by rememberUpdatedState(valueRange)
+
     val trackBackdrop = rememberLayerBackdrop()
     val combinedThumbBackdrop = if (sceneBackdrop != null) {
         rememberCombinedBackdrop(sceneBackdrop, trackBackdrop)
@@ -619,10 +714,16 @@ fun LiquidGlassSlider(
     val thumbHeightDp = (22f * glassConfig.pillScale).coerceIn(19f, 26f).dp
     val thumbWidthPx = with(density) { thumbWidthDp.toPx() }
 
+    val useLiveLens = glassTier != GlassQualityTier.BATTERY_SAVER &&
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+    val isLensActive = useLiveLens && (isDragging || thumbMorph > 0.01f)
+
     fun updateFromX(x: Float) {
+        val range = currentValueRange
+        val span = (range.endInclusive - range.start).coerceAtLeast(0.0001f)
         val usable = (trackWidthPx - thumbWidthPx).coerceAtLeast(1f)
         val norm = ((x - thumbWidthPx * 0.5f) / usable).coerceIn(0f, 1f)
-        onValueChange(valueRange.start + norm * rangeSpan)
+        currentOnValueChange(range.start + norm * span)
     }
 
     Box(
@@ -630,14 +731,14 @@ fun LiquidGlassSlider(
             .fillMaxWidth()
             .height(42.dp)
             .onSizeChanged { trackWidthPx = it.width.toFloat() }
-            .pointerInput(valueRange) {
+            .pointerInput(Unit) {
                 detectTapGestures { offset ->
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     updateFromX(offset.x)
-                    onValueChangeFinished?.invoke()
+                    currentOnValueChangeFinished?.invoke()
                 }
             }
-            .pointerInput(valueRange) {
+            .pointerInput(Unit) {
                 detectHorizontalDragGestures(
                     onDragStart = { offset ->
                         isDragging = true
@@ -646,11 +747,11 @@ fun LiquidGlassSlider(
                     },
                     onDragEnd = {
                         isDragging = false
-                        onValueChangeFinished?.invoke()
+                        currentOnValueChangeFinished?.invoke()
                     },
                     onDragCancel = {
                         isDragging = false
-                        onValueChangeFinished?.invoke()
+                        currentOnValueChangeFinished?.invoke()
                     },
                     onHorizontalDrag = { change, _ ->
                         change.consume()
@@ -660,12 +761,12 @@ fun LiquidGlassSlider(
             },
         contentAlignment = Alignment.CenterStart
     ) {
-        // LAYER 1: Track Rail captured into trackBackdrop so the crystal thumb refracts the bar underneath
+        // LAYER 1: Track Rail captured into trackBackdrop ONLY while thumb lens is active (zero idle GPU copies!)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(24.dp)
-                .layerBackdrop(trackBackdrop),
+                .then(if (isLensActive) Modifier.layerBackdrop(trackBackdrop) else Modifier),
             contentAlignment = Alignment.CenterStart
         ) {
             Box(
@@ -688,10 +789,8 @@ fun LiquidGlassSlider(
         // LAYER 2 (ON TOP, UNCLIPPED): Apple iOS 26 White Pill -> Crystal-Clear Magnifying Glass Droplet
         val usablePx = (trackWidthPx - thumbWidthPx).coerceAtLeast(0f)
         val thumbOffsetX = usablePx * fraction
-        val useLiveLens = glassTier != GlassQualityTier.BATTERY_SAVER &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
 
-        if (useLiveLens) {
+        if (isLensActive) {
             Box(
                 modifier = Modifier
                     .width(thumbWidthDp)
@@ -735,10 +834,10 @@ fun LiquidGlassSlider(
                     .width(thumbWidthDp)
                     .height(thumbHeightDp)
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = (0.96f - 0.68f * thumbMorph).coerceIn(0.28f, 0.96f)))
+                    .background(Color.White.copy(alpha = (0.98f - 0.68f * thumbMorph).coerceIn(0.28f, 0.98f)))
                     .border(
-                        width = 1.dp,
-                        color = Color.White.copy(alpha = 0.85f),
+                        width = 0.8.dp,
+                        color = Color.White.copy(alpha = 0.92f),
                         shape = CircleShape
                     )
             )
@@ -749,9 +848,9 @@ fun LiquidGlassSlider(
 /**
  * Authentic Apple iOS 26 / Kyant0 Liquid Glass Toggle Switch.
  *
- * - Captures the smooth Apple green / charcoal pill track via `rememberLayerBackdrop()`.
+ * - Captures the smooth Apple green / charcoal pill track via `rememberLayerBackdrop()` ONLY while active.
  * - Supports both tap AND horizontal drag scrubbing.
- * - At rest: crisp pure-white iOS 26 capsule thumb.
+ * - At rest: crisp pure-white iOS 26 capsule thumb with zero offscreen GPU cost while scrolling.
  * - While pressed, dragged, or snapping across: expands beyond the track height (`1.28x`, unclipped!)
  *   and turns into a **crystal-clear magnifying liquid glass lens** that visibly refracts & bends the
  *   vibrant green track directly through the glass capsule with subtle chromatic prism edges.
@@ -768,6 +867,9 @@ fun LiquidGlassToggle(
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
+
+    val currentChecked by rememberUpdatedState(checked)
+    val currentOnCheckedChange by rememberUpdatedState(onCheckedChange)
 
     val trackBackdrop = rememberLayerBackdrop()
     val combinedTrackBackdrop = if (sceneBackdrop != null) {
@@ -824,13 +926,14 @@ fun LiquidGlassToggle(
     )
     val useLiveLens = glassTier != GlassQualityTier.BATTERY_SAVER &&
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+    val isLensActive = useLiveLens && (isPressed || isMotionPopped || glassMorph > 0.01f)
 
     // Outer unclipped container gives generous vertical room so the expanded droplet never clips
     Box(
         modifier = modifier
             .width(trackWidth + 8.dp)
             .height(trackHeight + 12.dp)
-            .pointerInput(checked, travelPx, glassConfig.springStiffness, glassConfig.springDamping) {
+            .pointerInput(travelPx, glassConfig.springStiffness, glassConfig.springDamping) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     isPressed = true
@@ -843,14 +946,15 @@ fun LiquidGlassToggle(
                         val change = event.changes.firstOrNull() ?: break
                         if (!change.pressed) {
                             isPressed = false
-                            val nextChecked = if (dragged) progress.value >= 0.5f else !checked
+                            val activeChecked = currentChecked
+                            val nextChecked = if (dragged) progress.value >= 0.5f else !activeChecked
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            if (nextChecked != checked) {
-                                onCheckedChange(nextChecked)
+                            if (nextChecked != activeChecked) {
+                                currentOnCheckedChange(nextChecked)
                             } else {
                                 scope.launch {
                                     progress.animateTo(
-                                        targetValue = if (checked) 1f else 0f,
+                                        targetValue = if (activeChecked) 1f else 0f,
                                         animationSpec = spring(
                                             dampingRatio = (glassConfig.springDamping + 0.04f).coerceIn(0.58f, 0.84f),
                                             stiffness = (glassConfig.springStiffness * 1.15f).coerceAtLeast(480f)
@@ -873,12 +977,12 @@ fun LiquidGlassToggle(
             },
         contentAlignment = Alignment.Center
     ) {
-        // LAYER 1: Track captured into trackBackdrop
+        // LAYER 1: Track captured into trackBackdrop ONLY while actively pressed/snapping
         Box(
             modifier = Modifier
                 .width(trackWidth)
                 .height(trackHeight)
-                .layerBackdrop(trackBackdrop)
+                .then(if (isLensActive) Modifier.layerBackdrop(trackBackdrop) else Modifier)
                 .clip(CircleShape)
                 .background(trackColor)
         )
@@ -887,7 +991,7 @@ fun LiquidGlassToggle(
         val startOffsetPx = with(density) { (insetPadding + 4.dp).toPx() }
         val knobX = startOffsetPx + travelPx * progress.value
 
-        if (useLiveLens) {
+        if (isLensActive) {
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
@@ -933,8 +1037,8 @@ fun LiquidGlassToggle(
                     .width(knobWidth)
                     .height(knobHeight)
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = (0.96f - 0.65f * glassMorph).coerceIn(0.30f, 0.96f)))
-                    .border(1.dp, Color.White.copy(alpha = 0.85f), CircleShape)
+                    .background(Color.White.copy(alpha = (0.98f - 0.65f * glassMorph).coerceIn(0.30f, 0.98f)))
+                    .border(0.8.dp, Color.White.copy(alpha = 0.92f), CircleShape)
             )
         }
     }
@@ -952,7 +1056,8 @@ fun LiquidGlassChip(
 ) {
     val palette = LocalLiquidPalette.current
     val haptic = LocalHapticFeedback.current
-    var isPressed by remember { mutableStateOf(false) }
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
 
     val scale by animateFloatAsState(
         targetValue = if (isPressed) 0.93f else 1f,
@@ -977,6 +1082,15 @@ fun LiquidGlassChip(
         animationSpec = tween(200),
         label = "chipBorder"
     )
+    val borderBrush = remember(borderColor) {
+        Brush.linearGradient(
+            colors = listOf(
+                borderColor,
+                borderColor.copy(alpha = 0.25f),
+                borderColor.copy(alpha = 0.55f)
+            )
+        )
+    }
 
     Box(
         modifier = modifier
@@ -986,51 +1100,31 @@ fun LiquidGlassChip(
             }
             .clip(CircleShape)
             .background(bgColor)
-            .drawWithContent {
-                drawContent()
-                drawRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = if (selected) 0.18f else 0.06f),
-                            Color.Transparent
-                        ),
-                        startY = 0f,
-                        endY = size.height * 0.55f
-                    )
+            .drawWithCache {
+                val sheen = Brush.verticalGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = if (selected) 0.18f else 0.06f),
+                        Color.Transparent
+                    ),
+                    startY = 0f,
+                    endY = size.height * 0.55f
                 )
+                onDrawWithContent {
+                    drawContent()
+                    drawRect(brush = sheen)
+                }
             }
             .border(
                 width = 0.7.dp,
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        borderColor,
-                        borderColor.copy(alpha = 0.25f),
-                        borderColor.copy(alpha = 0.55f)
-                    )
-                ),
+                brush = borderBrush,
                 shape = CircleShape
             )
-            .pointerInput(onClick) {
-                awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
-                    isPressed = true
-                    var cancelled = false
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull() ?: break
-                        if (!change.pressed) break
-                        if (change.position.x < -20f || change.position.y < -20f ||
-                            change.position.x > size.width + 20f || change.position.y > size.height + 20f
-                        ) {
-                            cancelled = true
-                        }
-                    }
-                    isPressed = false
-                    if (!cancelled) {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onClick()
-                    }
-                }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null
+            ) {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onClick()
             }
             .padding(horizontal = 16.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center
@@ -1048,21 +1142,25 @@ fun TrackArtwork(
     artworkUrl: String,
     contentDescription: String,
     modifier: Modifier = Modifier,
-    cornerRadius: Dp = 14.dp
+    cornerRadius: Dp = 14.dp,
+    contentScale: ContentScale = ContentScale.Crop
 ) {
     val palette = LocalLiquidPalette.current
-    val shape = RoundedCornerShape(cornerRadius)
-    Box(
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
+    val bgBrush = remember(palette.deepAurora) {
+        Brush.linearGradient(
+            listOf(
+                palette.deepAurora.copy(alpha = 0.72f),
+                AppleGlassTokens.NeutralDarkTint
+            )
+        )
+    }
+    BoxWithConstraints(
         modifier = modifier
             .clip(shape)
-            .background(
-                Brush.linearGradient(
-                    listOf(
-                        palette.deepAurora.copy(alpha = 0.72f),
-                        AppleGlassTokens.NeutralDarkTint
-                    )
-                )
-            )
+            .background(bgBrush)
             .border(0.65.dp, Color.White.copy(alpha = 0.18f), shape),
         contentAlignment = Alignment.Center
     ) {
@@ -1073,10 +1171,26 @@ fun TrackArtwork(
             modifier = Modifier.size(24.dp)
         )
         if (artworkUrl.isNotBlank()) {
+            val targetPx = remember(maxWidth, maxHeight, density) {
+                val maxDp = if (maxWidth.value.isFinite() && maxHeight.value.isFinite()) {
+                    maxOf(maxWidth.value, maxHeight.value)
+                } else {
+                    180f
+                }
+                (maxDp * density.density * 1.25f).toInt().coerceIn(96, 1080)
+            }
+            val request = remember(artworkUrl, targetPx) {
+                ImageRequest.Builder(context)
+                    .data(artworkUrl)
+                    .size(targetPx)
+                    .precision(Precision.INEXACT)
+                    .crossfade(150)
+                    .build()
+            }
             AsyncImage(
-                model = artworkUrl,
+                model = request,
                 contentDescription = contentDescription,
-                contentScale = ContentScale.Crop,
+                contentScale = contentScale,
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -1089,45 +1203,60 @@ fun AnimatedWaveformBars(
     modifier: Modifier = Modifier,
     barColor: Color = LocalLiquidPalette.current.secondaryGlow
 ) {
-    val transition = rememberInfiniteTransition(label = "waveformBars")
-    val bar1 by transition.animateFloat(
-        initialValue = 0.25f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(420, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "b1"
-    )
-    val bar2 by transition.animateFloat(
-        initialValue = 0.9f,
-        targetValue = 0.2f,
-        animationSpec = infiniteRepeatable(tween(340, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "b2"
-    )
-    val bar3 by transition.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 0.95f,
-        animationSpec = infiniteRepeatable(tween(510, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "b3"
-    )
-    val bar4 by transition.animateFloat(
-        initialValue = 0.75f,
-        targetValue = 0.28f,
-        animationSpec = infiniteRepeatable(tween(390, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "b4"
-    )
+    val bar1: Float
+    val bar2: Float
+    val bar3: Float
+    val bar4: Float
+    if (isPlaying) {
+        val transition = rememberInfiniteTransition(label = "waveformBars")
+        bar1 = transition.animateFloat(
+            initialValue = 0.25f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(420, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+            label = "b1"
+        ).value
+        bar2 = transition.animateFloat(
+            initialValue = 0.9f,
+            targetValue = 0.2f,
+            animationSpec = infiniteRepeatable(tween(340, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+            label = "b2"
+        ).value
+        bar3 = transition.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 0.95f,
+            animationSpec = infiniteRepeatable(tween(510, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+            label = "b3"
+        ).value
+        bar4 = transition.animateFloat(
+            initialValue = 0.75f,
+            targetValue = 0.28f,
+            animationSpec = infiniteRepeatable(tween(390, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+            label = "b4"
+        ).value
+    } else {
+        bar1 = 0.28f
+        bar2 = 0.45f
+        bar3 = 0.32f
+        bar4 = 0.22f
+    }
 
-    val levels = if (isPlaying) listOf(bar1, bar2, bar3, bar4) else listOf(0.28f, 0.45f, 0.32f, 0.22f)
-    Row(
-        modifier = modifier.height(16.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.5.dp),
-        verticalAlignment = Alignment.Bottom
+    Canvas(
+        modifier = modifier
+            .width(19.5.dp)
+            .height(16.dp)
     ) {
-        levels.forEach { lvl ->
-            Box(
-                modifier = Modifier
-                    .width(3.dp)
-                    .height((16f * lvl).dp)
-                    .clip(CircleShape)
-                    .background(barColor)
+        val barW = 3.dp.toPx()
+        val gap = 2.5.dp.toPx()
+        val corner = CornerRadius(barW / 2f, barW / 2f)
+        val h = size.height
+        val levels = floatArrayOf(bar1, bar2, bar3, bar4)
+        for (i in levels.indices) {
+            val barH = (h * levels[i]).coerceAtLeast(barW)
+            drawRoundRect(
+                color = barColor,
+                topLeft = Offset(x = i * (barW + gap), y = h - barH),
+                size = Size(barW, barH),
+                cornerRadius = corner
             )
         }
     }

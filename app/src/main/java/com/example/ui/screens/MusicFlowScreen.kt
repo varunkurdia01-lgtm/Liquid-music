@@ -39,7 +39,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,13 +51,18 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.size.Precision
+import com.example.domain.model.LyricLine
 import com.example.domain.model.Track
 import com.example.ui.components.AnimatedLikeButton
 import com.example.ui.components.EchoHomeModePill
@@ -66,6 +73,7 @@ import com.example.ui.theme.FrostWhite
 import com.example.ui.theme.LocalLiquidPalette
 import com.example.ui.theme.MistSecondary
 import com.example.ui.viewmodel.PlayerUiState
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 /**
@@ -90,9 +98,11 @@ fun MusicFlowScreen(
     onAddToPlaylist: (Track) -> Unit,
     onStartRadio: (Track) -> Unit,
     onOpenDna: (Track) -> Unit,
-    onExpandPlayer: () -> Unit
+    onExpandPlayer: () -> Unit,
+    positionMsFlow: StateFlow<Long>? = null
 ) {
     val palette = LocalLiquidPalette.current
+    val context = LocalContext.current
 
     if (feedTracks.isEmpty()) {
         Box(
@@ -126,14 +136,17 @@ fun MusicFlowScreen(
     }
     val pagerState = rememberPagerState(initialPage = initialPage, pageCount = { feedTracks.size })
 
+    val latestCurrentTrackId by rememberUpdatedState(playerState.currentTrack?.id)
+    val latestOnPlayFlowTrack by rememberUpdatedState(onPlayFlowTrack)
+
     // Auto-play settled Flow track seamlessly
     LaunchedEffect(pagerState, feedTracks) {
         snapshotFlow { pagerState.settledPage }
             .distinctUntilChanged()
             .collect { page ->
                 val target = feedTracks.getOrNull(page) ?: return@collect
-                if (playerState.currentTrack?.id != target.id) {
-                    onPlayFlowTrack(feedTracks, page)
+                if (latestCurrentTrackId != target.id) {
+                    latestOnPlayFlowTrack(feedTracks, page)
                 }
             }
     }
@@ -155,10 +168,18 @@ fun MusicFlowScreen(
             val isDownloaded = downloadedTrackIds.contains(track.id)
 
             Box(modifier = Modifier.fillMaxSize()) {
-                // Full-bleed blurred artwork backdrop
+                // Full-bleed blurred artwork backdrop (downsampled to 220px before 32dp blur for 120fps swiping)
                 if (track.artworkUrl.isNotBlank()) {
+                    val backdropRequest = remember(track.artworkUrl) {
+                        ImageRequest.Builder(context)
+                            .data(track.artworkUrl)
+                            .size(220)
+                            .precision(Precision.INEXACT)
+                            .crossfade(180)
+                            .build()
+                    }
                     AsyncImage(
-                        model = track.artworkUrl,
+                        model = backdropRequest,
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
@@ -230,52 +251,14 @@ fun MusicFlowScreen(
 
                         Spacer(modifier = Modifier.height(20.dp))
 
-                        // Live Synced Karaoke Lyric Snippet
+                        // Live Synced Karaoke Lyric Snippet (isolated leaf collector for 10Hz updates)
                         if (isThisActive && playerState.lyricsState.syncedLines.isNotEmpty()) {
-                            val effectivePos = (playerState.positionMs + lyricsOffsetMs).coerceAtLeast(0L)
-                            val activeLineIdx = remember(playerState.lyricsState.syncedLines, effectivePos) {
-                                playerState.lyricsState.syncedLines.indexOfLast { it.timestampMs <= effectivePos }
-                                    .coerceAtLeast(0)
-                            }
-                            val currentLine = playerState.lyricsState.syncedLines.getOrNull(activeLineIdx)?.text.orEmpty()
-                            val nextLine = playerState.lyricsState.syncedLines.getOrNull(activeLineIdx + 1)?.text.orEmpty()
-
-                            AnimatedContent(
-                                targetState = currentLine to nextLine,
-                                transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(180)) },
-                                label = "flowLyricTransition"
-                            ) { (curr, next) ->
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(18.dp))
-                                        .background(Color(0x550C1222))
-                                        .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(18.dp))
-                                        .padding(horizontal = 14.dp, vertical = 12.dp)
-                                ) {
-                                    Text(
-                                        text = curr,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = FrostWhite,
-                                        textAlign = TextAlign.Center,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    if (next.isNotBlank()) {
-                                        Text(
-                                            text = next,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MistSecondary.copy(alpha = 0.78f),
-                                            textAlign = TextAlign.Center,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-                            }
+                            FlowSyncedLyricSpotlight(
+                                syncedLines = playerState.lyricsState.syncedLines,
+                                positionMsFlow = positionMsFlow,
+                                fallbackPositionMs = playerState.positionMs,
+                                lyricsOffsetMs = lyricsOffsetMs
+                            )
                         } else {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -415,7 +398,7 @@ private fun FlowActionButton(
     ) {
         Box(
             modifier = Modifier
-                .size(46.dp)
+                .size(48.dp)
                 .clip(CircleShape)
                 .background(Color(0x88101628))
                 .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
@@ -429,5 +412,58 @@ private fun FlowActionButton(
             style = MaterialTheme.typography.labelSmall,
             color = FrostWhite.copy(alpha = 0.86f)
         )
+    }
+}
+
+@Composable
+private fun FlowSyncedLyricSpotlight(
+    syncedLines: List<LyricLine>,
+    positionMsFlow: StateFlow<Long>?,
+    fallbackPositionMs: Long,
+    lyricsOffsetMs: Long
+) {
+    val livePos = positionMsFlow?.collectAsStateWithLifecycle()?.value ?: fallbackPositionMs
+    val effectivePos = (livePos + lyricsOffsetMs).coerceAtLeast(0L)
+    val activeLineIdx = remember(syncedLines, effectivePos) {
+        syncedLines.indexOfLast { it.timestampMs <= effectivePos }.coerceAtLeast(0)
+    }
+    val currentLine = syncedLines.getOrNull(activeLineIdx)?.text.orEmpty()
+    val nextLine = syncedLines.getOrNull(activeLineIdx + 1)?.text.orEmpty()
+
+    AnimatedContent(
+        targetState = currentLine to nextLine,
+        transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(180)) },
+        label = "flowLyricTransition"
+    ) { (curr, next) ->
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(18.dp))
+                .background(Color(0x550C1222))
+                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(18.dp))
+                .padding(horizontal = 14.dp, vertical = 12.dp)
+        ) {
+            Text(
+                text = curr,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = FrostWhite,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (next.isNotBlank()) {
+                Text(
+                    text = next,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MistSecondary.copy(alpha = 0.78f),
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     }
 }

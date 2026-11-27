@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +37,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -404,9 +407,9 @@ fun SoundLabScreen(
                     modifier = Modifier.padding(18.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    LabSectionTitle(icon = Icons.Rounded.GraphicEq, title = "Crossfade Transitions")
+                    LabSectionTitle(icon = Icons.Rounded.GraphicEq, title = "Smooth Fade Transitions")
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Crossfade Duration", style = MaterialTheme.typography.bodyMedium, color = MistSecondary)
+                        Text("Fade Duration", style = MaterialTheme.typography.bodyMedium, color = MistSecondary)
                         Text(
                             text = if (settings.crossfadeSeconds == 0) "Off" else "${settings.crossfadeSeconds}s",
                             style = MaterialTheme.typography.labelMedium,
@@ -505,12 +508,13 @@ private fun VerticalGlassEqBand(
     onValueChange: (Float) -> Unit
 ) {
     val palette = LocalLiquidPalette.current
+    val latestOnValueChange by rememberUpdatedState(onValueChange)
     val normalized = ((valueDb + 12f) / 24f).coerceIn(0f, 1f)
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
-        modifier = Modifier.width(52.dp)
+        modifier = Modifier.width(56.dp)
     ) {
         Text(
             text = "${if (valueDb >= 0) "+" else ""}${valueDb.roundToInt()}",
@@ -521,31 +525,44 @@ private fun VerticalGlassEqBand(
 
         Box(
             modifier = Modifier
-                .width(34.dp)
+                .width(48.dp)
                 .height(126.dp)
-                .clip(RoundedCornerShape(17.dp))
-                .background(Color(0x550C1224))
-                .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(17.dp))
-                .pointerInput(Unit) {
+                .pointerInput(label) {
+                    detectTapGestures { offset ->
+                        val fraction = (1f - (offset.y / size.height.toFloat())).coerceIn(0f, 1f)
+                        latestOnValueChange(fraction * 24f - 12f)
+                    }
+                }
+                .pointerInput(label) {
                     detectVerticalDragGestures { change, _ ->
                         change.consume()
                         val fraction = (1f - (change.position.y / size.height.toFloat())).coerceIn(0f, 1f)
-                        onValueChange(fraction * 24f - 12f)
+                        latestOnValueChange(fraction * 24f - 12f)
                     }
                 },
-            contentAlignment = Alignment.BottomCenter
+            contentAlignment = Alignment.Center
         ) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(normalized.coerceAtLeast(0.06f))
+                    .width(34.dp)
+                    .fillMaxHeight()
                     .clip(RoundedCornerShape(17.dp))
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(palette.primaryGlow, palette.secondaryGlow, palette.deepAurora)
+                    .background(Color(0x550C1224))
+                    .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(17.dp)),
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(normalized.coerceAtLeast(0.06f))
+                        .clip(RoundedCornerShape(17.dp))
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(palette.primaryGlow, palette.secondaryGlow, palette.deepAurora)
+                            )
                         )
-                    )
-            )
+                )
+            }
         }
 
         Text(

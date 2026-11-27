@@ -8,13 +8,16 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Handler
 import android.widget.RemoteViews
+import androidx.core.content.ContextCompat
 import com.example.MainActivity
 import com.example.R
 import com.example.player.LiquidPlaybackService
 import com.example.player.PlaybackDspBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.net.URL
@@ -53,28 +56,39 @@ class LiquidMusicWidgetProvider : AppWidgetProvider() {
             ACTION_WIDGET_PLAY_PAUSE,
             ACTION_WIDGET_NEXT,
             ACTION_WIDGET_PREV -> {
+                val action = intent.action
                 val player = PlaybackDspBridge.activePlayer
                 if (player != null) {
-                    when (intent.action) {
-                        ACTION_WIDGET_PLAY_PAUSE -> {
-                            if (player.isPlaying) player.pause() else player.play()
-                        }
-                        ACTION_WIDGET_NEXT -> {
-                            if (player.hasNextMediaItem()) player.seekToNextMediaItem()
-                        }
-                        ACTION_WIDGET_PREV -> {
-                            if (player.currentPosition > 3_500L) {
-                                player.seekTo(0L)
-                            } else if (player.hasPreviousMediaItem()) {
-                                player.seekToPreviousMediaItem()
+                    Handler(player.applicationLooper).post {
+                        when (action) {
+                            ACTION_WIDGET_PLAY_PAUSE -> {
+                                if (player.isPlaying) player.pause() else player.play()
+                            }
+                            ACTION_WIDGET_NEXT -> {
+                                if (player.hasNextMediaItem()) player.seekToNextMediaItem()
+                            }
+                            ACTION_WIDGET_PREV -> {
+                                if (player.currentPosition > 3_500L) {
+                                    player.seekTo(0L)
+                                } else if (player.hasPreviousMediaItem()) {
+                                    player.seekToPreviousMediaItem()
+                                }
                             }
                         }
                     }
                 } else {
                     val serviceIntent = Intent(context, LiquidPlaybackService::class.java).apply {
-                        action = intent.action
+                        this.action = action
                     }
-                    runCatching { context.startService(serviceIntent) }
+                    val started = runCatching {
+                        ContextCompat.startForegroundService(context, serviceIntent)
+                    }.isSuccess
+                    if (!started) {
+                        val openIntent = Intent(context, MainActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        }
+                        runCatching { context.startActivity(openIntent) }
+                    }
                 }
             }
         }
@@ -84,6 +98,7 @@ class LiquidMusicWidgetProvider : AppWidgetProvider() {
         const val ACTION_WIDGET_PLAY_PAUSE = "com.example.widget.ACTION_PLAY_PAUSE"
         const val ACTION_WIDGET_NEXT = "com.example.widget.ACTION_NEXT"
         const val ACTION_WIDGET_PREV = "com.example.widget.ACTION_PREV"
+        const val EXTRA_EXPAND_NOW_PLAYING = "com.example.widget.EXTRA_EXPAND_NOW_PLAYING"
 
         private const val PREFS_NAME = "liquid_widget_prefs"
         private const val KEY_TITLE = "title"
@@ -93,6 +108,9 @@ class LiquidMusicWidgetProvider : AppWidgetProvider() {
         private const val KEY_PLAYING = "playing"
 
         private val widgetScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        private var artworkJob: Job? = null
+        @Volatile
+        private var latestArtworkUrl: String = ""
         @Volatile
         private var cachedArtworkUrl: String = ""
         @Volatile
@@ -107,6 +125,7 @@ class LiquidMusicWidgetProvider : AppWidgetProvider() {
             isPlaying: Boolean
         ) {
             val appCtx = context.applicationContext
+            latestArtworkUrl = artworkUrl
             appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
                 .putString(KEY_TITLE, title)
                 .putString(KEY_ARTIST, artist)
@@ -140,7 +159,9 @@ class LiquidMusicWidgetProvider : AppWidgetProvider() {
             artworkUrl: String,
             isPlaying: Boolean
         ) {
-            widgetScope.launch {
+            latestArtworkUrl = artworkUrl
+            artworkJob?.cancel()
+            artworkJob = widgetScope.launch {
                 val bmp = runCatching {
                     val conn = URL(artworkUrl).openConnection().apply {
                         connectTimeout = 5000
@@ -152,10 +173,21 @@ class LiquidMusicWidgetProvider : AppWidgetProvider() {
                     }
                 }.getOrNull() ?: return@launch
 
+                // Discard stale artwork if the user skipped tracks while loading
+                if (latestArtworkUrl != artworkUrl) return@launch
+
                 cachedArtworkUrl = artworkUrl
                 cachedArtworkBitmap = bmp
+
+                // Re-read the freshest play/pause and metadata state from SharedPreferences
+                val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val latestTitle = prefs.getString(KEY_TITLE, title).orEmpty().ifBlank { title }
+                val latestArtist = prefs.getString(KEY_ARTIST, artist).orEmpty()
+                val latestBadge = prefs.getString(KEY_BADGE, badge).orEmpty().ifBlank { badge }
+                val latestPlaying = prefs.getBoolean(KEY_PLAYING, isPlaying)
+
                 for (id in ids) {
-                    manager.updateAppWidget(id, buildRemoteViews(context, title, artist, badge, isPlaying, bmp))
+                    manager.updateAppWidget(id, buildRemoteViews(context, latestTitle, latestArtist, latestBadge, latestPlaying, bmp))
                 }
             }
         }
@@ -184,6 +216,7 @@ class LiquidMusicWidgetProvider : AppWidgetProvider() {
 
             val openAppIntent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+                putExtra(EXTRA_EXPAND_NOW_PLAYING, true)
             }
             val openAppPi = PendingIntent.getActivity(
                 context,

@@ -106,6 +106,13 @@ fun HomeScreen(
         val dynamic = uiState.moods.map { it.title }
         (listOf("All") + dynamic + listOf("Local Files")).distinct()
     }
+    val filteredBrowseSections = remember(uiState.browseSections, uiState.showSpeedDial) {
+        uiState.browseSections.filterNot {
+            uiState.showSpeedDial &&
+                it.layoutType == BrowseLayoutType.QUICK_PICKS_GRID &&
+                it.title.equals("Quick Picks", ignoreCase = true)
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -430,23 +437,93 @@ fun HomeScreen(
                     }
                 }
 
-                // 5. Dynamic Browse Sections from YouTube Music InnerTube (Charts, New Releases, Carousels)
-                items(
-                    items = uiState.browseSections.filterNot {
-                        uiState.showSpeedDial && it.layoutType == BrowseLayoutType.QUICK_PICKS_GRID && it.title.equals("Quick Picks", ignoreCase = true)
-                    },
-                    key = { it.id }
-                ) { section ->
-                    BrowseSectionRenderer(
-                        section = section,
-                        activeTrackId = activeTrackId,
-                        isPlaying = isPlaying,
-                        onPlayQueue = onPlayQueue,
-                        onStartRadio = onStartRadio,
-                        onAddTrackToPlaylist = onAddTrackToPlaylist,
-                        onOpenAlbum = onOpenAlbum,
-                        onOpenArtist = onOpenArtist
-                    )
+                // 5. Dynamic Browse Sections from YouTube Music InnerTube (Charts flattened lazily!)
+                filteredBrowseSections.forEach { section ->
+                    if (section.layoutType == BrowseLayoutType.CHART_LIST && section.tracks.isNotEmpty()) {
+                        item(key = "chart_hdr_${section.id}") {
+                            SectionHeader(
+                                title = section.title,
+                                subtitle = section.subtitle.ifBlank { "Top live chart rankings" }
+                            )
+                        }
+                        val topChart = section.tracks.take(10)
+                        itemsIndexed(
+                            items = topChart,
+                            key = { idx, t -> "chart_${section.id}_${idx}_${t.id}" }
+                        ) { idx, track ->
+                            val isActive = track.id == activeTrackId
+                            Box(modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
+                                EchoSurfaceCard(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("chart_track_${track.id}"),
+                                    cornerRadius = 18.dp,
+                                    elevated = isActive,
+                                    accentBorder = if (isActive) palette.secondaryGlow.copy(alpha = 0.55f) else null,
+                                    onClick = { onPlayQueue(section.tracks, idx) }
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "${idx + 1}",
+                                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = if (idx < 3) palette.primaryGlow else MistSecondary,
+                                            modifier = Modifier.width(26.dp)
+                                        )
+                                        TrackArtwork(
+                                            artworkUrl = track.artworkUrl,
+                                            contentDescription = track.title,
+                                            cornerRadius = 12.dp,
+                                            modifier = Modifier.size(48.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = track.title,
+                                                style = MaterialTheme.typography.titleSmall,
+                                                color = if (isActive) palette.primaryGlow else FrostWhite,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = track.artist,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MistSecondary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        if (isActive) {
+                                            AnimatedWaveformBars(isPlaying = isPlaying, modifier = Modifier.padding(end = 4.dp))
+                                        }
+                                        IconButton(onClick = { onStartRadio(track) }, modifier = Modifier.size(38.dp)) {
+                                            Icon(Icons.Rounded.Radio, contentDescription = "Start radio", tint = palette.secondaryGlow, modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        item(key = "chart_spacer_${section.id}") {
+                            Spacer(modifier = Modifier.height(20.dp))
+                        }
+                    } else {
+                        item(key = section.id) {
+                            BrowseSectionRenderer(
+                                section = section,
+                                activeTrackId = activeTrackId,
+                                isPlaying = isPlaying,
+                                onPlayQueue = onPlayQueue,
+                                onStartRadio = onStartRadio,
+                                onAddTrackToPlaylist = onAddTrackToPlaylist,
+                                onOpenAlbum = onOpenAlbum,
+                                onOpenArtist = onOpenArtist
+                            )
+                        }
+                    }
                 }
             }
 
@@ -509,7 +586,7 @@ private fun EchoQuickPicksGridSection(
     onSurpriseMe: () -> Unit
 ) {
     val palette = LocalLiquidPalette.current
-    val columns = tracks.take(16).chunked(4)
+    val columns = remember(tracks) { tracks.take(16).chunked(4) }
 
     Column(modifier = Modifier.padding(bottom = 24.dp)) {
         Row(
@@ -550,13 +627,13 @@ private fun EchoQuickPicksGridSection(
             contentPadding = PaddingValues(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            itemsIndexed(columns, key = { colIdx, _ -> "qp_col_$colIdx" }) { _, colTracks ->
+            itemsIndexed(columns, key = { colIdx, _ -> "qp_col_$colIdx" }) { colIdx, colTracks ->
                 Column(
                     modifier = Modifier.width(278.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    colTracks.forEach { track ->
-                        val globalIdx = tracks.indexOf(track).coerceAtLeast(0)
+                    colTracks.forEachIndexed { rowIdx, track ->
+                        val globalIdx = (colIdx * 4 + rowIdx).coerceIn(0, (tracks.size - 1).coerceAtLeast(0))
                         QuickPickTile(
                             track = track,
                             isActive = track.id == activeTrackId,
@@ -590,20 +667,20 @@ private fun BrowseSectionRenderer(
                     title = section.title,
                     subtitle = section.subtitle.ifBlank { "Tap to play · Radio button launches Endless Radio" }
                 )
-                val rows = section.tracks.take(8).chunked(2)
+                val rows = remember(section.tracks) { section.tracks.take(8).chunked(2) }
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    rows.forEach { pair ->
+                    rows.forEachIndexed { rowIdx, pair ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            pair.forEach { track ->
-                                val idx = section.tracks.indexOf(track)
+                            pair.forEachIndexed { colIdx, track ->
+                                val idx = (rowIdx * 2 + colIdx).coerceIn(0, (section.tracks.size - 1).coerceAtLeast(0))
                                 QuickPickTile(
                                     track = track,
                                     isActive = track.id == activeTrackId,

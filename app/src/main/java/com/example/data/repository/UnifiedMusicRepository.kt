@@ -72,7 +72,8 @@ class UnifiedMusicRepository(
     private val innerTubeProvider: InnerTubeMusicProvider? = null,
     private val audiusFallback: AudiusFallbackProvider? = null,
     private val soundCloudFallback: SoundCloudFallbackProvider? = null,
-    private val bilibiliFallback: BilibiliFallbackProvider? = null
+    private val bilibiliFallback: BilibiliFallbackProvider? = null,
+    private val onProxyConfigured: ((Boolean, String) -> Unit)? = null
 ) {
     private val trackRegistry = ConcurrentHashMap<String, Track>()
 
@@ -90,6 +91,9 @@ class UnifiedMusicRepository(
         val cookieVal = settings.innerTubeCookie.takeIf { it.isNotBlank() }
         val visitorVal = settings.visitorData.takeIf { it.isNotBlank() }
         val syncIdVal = settings.dataSyncId.takeIf { it.isNotBlank() }
+
+        onProxyConfigured?.invoke(settings.proxyEnabled, settings.proxyUrl)
+        InnerTubeXResolver.configureProxy(settings.proxyEnabled, settings.proxyUrl)
 
         innerTubeClient?.let { client ->
             client.contentCountry = country
@@ -467,8 +471,8 @@ class UnifiedMusicRepository(
             )
         }
 
-        // 3. Always try YouTube Music FIRST at the highest possible quality unless the user explicitly selected EXTENSION_FIRST
-        val requestedQuality = if (quality == AudioQuality.LOW_96) quality else AudioQuality.HIGH_320
+        // 3. Respect the user's selected audio quality tier (96k / 160k / 320k) while trying YouTube Music first by default
+        val requestedQuality = quality
         val forceExtensionFirst = preferExtensionAudio || playbackEngine == EchoPlaybackEngine.EXTENSION_FIRST
 
         if (forceExtensionFirst) {

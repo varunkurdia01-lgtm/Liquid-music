@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import androidx.core.content.ContextCompat
+import com.example.domain.model.MusicSource
 import com.example.domain.model.SourceType
 import com.example.domain.model.Track
 import kotlinx.coroutines.Dispatchers
@@ -79,7 +80,12 @@ class LocalAudioRepository(private val context: Context) {
                         MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
                         id
                     )
-                    val artUri = ContentUris.withAppendedId(albumArtBase, albumId)
+                    val artUriStr = when {
+                        albumId <= 0L -> ""
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+                            ContentUris.withAppendedId(MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI, albumId).toString()
+                        else -> ContentUris.withAppendedId(albumArtBase, albumId).toString()
+                    }
 
                     tracks.add(
                         Track(
@@ -88,9 +94,10 @@ class LocalAudioRepository(private val context: Context) {
                             artist = artist,
                             album = album,
                             durationMs = duration,
-                            artworkUrl = artUri.toString(),
+                            artworkUrl = artUriStr,
                             localUri = contentUri.toString(),
                             sourceType = SourceType.LOCAL,
+                            sourceProvider = MusicSource.LOCAL,
                             addedAt = dateAdded
                         )
                     )

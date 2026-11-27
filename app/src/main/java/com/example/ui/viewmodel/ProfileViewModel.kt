@@ -1,9 +1,11 @@
 package com.example.ui.viewmodel
 
 import android.net.Uri
+import android.webkit.CookieManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.LiquidAppContainer
+import com.example.data.remote.innertube.InnerTubeXResolver
 import com.example.domain.model.TopStatItem
 import com.example.domain.model.UserProfile
 import com.example.domain.model.WrappedStats
@@ -12,6 +14,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.Instant
@@ -151,7 +154,17 @@ class ProfileViewModel(
 
     fun signOut() {
         viewModelScope.launch {
+            runCatching {
+                val cookieManager = CookieManager.getInstance()
+                cookieManager.removeAllCookies(null)
+                cookieManager.flush()
+            }
             container.authRepository.signOut()
+            InnerTubeXResolver.syncSession(null, null, "US", "en")
+            runCatching {
+                val settings = container.preferencesRepository.soundLabSettings.first()
+                container.musicRepository.applyEchoProviderSettings(settings)
+            }
         }
     }
 

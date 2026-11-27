@@ -7,7 +7,7 @@
     <string name="tab_sound_lab">Sound Lab</string>
     <string name="tab_profile">Profile</string>
     <string name="onboarding_sign_in">Sign In / Create Account</string>
-    <string name="onboarding_google_demo">Continue with Google (Demo)</string>
+    <string name="onboarding_google_demo">Quick Start Local Profile</string>
     <string name="onboarding_skip_guest">Skip for Now (Guest Mode)</string>
     <string name="search_hint">Search songs, artists, or local files…</string>
     <string name="vibe_dj_title">Gemini AI Vibe DJ</string>

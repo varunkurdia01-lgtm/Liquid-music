@@ -205,9 +205,9 @@ class PreferencesRepository(private val context: Context) : AuthRepository {
 
     override suspend fun signInWithGoogleDemo() {
         context.liquidDataStore.edit { prefs ->
-            prefs[Keys.DISPLAY_NAME] = "Alex Rivera"
-            prefs[Keys.EMAIL] = "alex.rivera@liquid.audio"
-            prefs[Keys.HANDLE] = "@alexrivera"
+            prefs[Keys.DISPLAY_NAME] = "Liquid Listener"
+            prefs[Keys.EMAIL] = ""
+            prefs[Keys.HANDLE] = "@listener"
             prefs[Keys.AVATAR_SEED] = 42
             prefs[Keys.IS_GUEST] = false
             prefs[Keys.IS_SIGNED_IN] = true
@@ -236,6 +236,13 @@ class PreferencesRepository(private val context: Context) : AuthRepository {
     override suspend fun signOut() {
         context.liquidDataStore.edit { prefs ->
             prefs[Keys.IS_SIGNED_IN] = false
+            prefs[Keys.INNERTUBE_COOKIE] = ""
+            prefs[Keys.VISITOR_DATA] = ""
+            prefs[Keys.DATA_SYNC_ID] = ""
+            prefs[Keys.YTM_ACCOUNT_NAME] = ""
+            prefs[Keys.YTM_ACCOUNT_HANDLE] = ""
+            prefs[Keys.YTM_ACCOUNT_AVATAR] = ""
+            prefs[Keys.YTM_LAST_SYNCED_AT] = 0L
         }
     }
 
@@ -437,7 +444,7 @@ class PreferencesRepository(private val context: Context) : AuthRepository {
         return SoundLabSettings(
             audioQuality = quality,
             cellularAudioQuality = cellQuality,
-            crossfadeSeconds = prefs[Keys.CROSSFADE_SECONDS] ?: 4,
+            crossfadeSeconds = prefs[Keys.CROSSFADE_SECONDS] ?: 0,
             skipSilenceEnabled = prefs[Keys.SKIP_SILENCE] ?: false,
             skipSilenceInstant = prefs[Keys.SKIP_SILENCE_INSTANT] ?: false,
             volumeNormalizationEnabled = prefs[Keys.VOLUME_NORMALIZATION] ?: true,

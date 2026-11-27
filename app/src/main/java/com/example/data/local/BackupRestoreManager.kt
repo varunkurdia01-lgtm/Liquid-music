@@ -181,6 +181,7 @@ class BackupRestoreManager(
                 for (i in 0 until tracksArr.length()) {
                     val o = tracksArr.optJSONObject(i) ?: continue
                     val id = o.optString("id").ifBlank { continue }
+                    val existingDownloadPath = dao.getTrackById(id)?.downloadedFilePath.orEmpty()
                     entities.add(
                         TrackEntity(
                             id = id,
@@ -193,7 +194,7 @@ class BackupRestoreManager(
                             streamUrl160 = o.optString("streamUrl160"),
                             streamUrl320 = o.optString("streamUrl320"),
                             localUri = o.optString("localUri"),
-                            downloadedFilePath = "",
+                            downloadedFilePath = existingDownloadPath,
                             sourceType = o.optString("sourceType", SourceType.ONLINE.name),
                             sourceProvider = o.optString("sourceProvider", MusicSource.YOUTUBE_MUSIC.name),
                             providerTrackId = o.optString("providerTrackId"),
@@ -225,7 +226,8 @@ class BackupRestoreManager(
                 for (i in 0 until playlistsArr.length()) {
                     val o = playlistsArr.optJSONObject(i) ?: continue
                     val name = o.optString("name").ifBlank { continue }
-                    val newId = dao.insertPlaylist(
+                    val existingPlaylist = dao.findPlaylistByName(name)
+                    val newId = existingPlaylist?.id ?: dao.insertPlaylist(
                         PlaylistEntity(
                             name = name,
                             description = o.optString("description"),
@@ -272,9 +274,15 @@ class BackupRestoreManager(
 
             val historyArr = root.optJSONArray("listeningEvents")
             if (historyArr != null) {
+                val existingKeys = dao.getListeningEventsOnce()
+                    .map { it.trackId to it.timestamp }
+                    .toMutableSet()
                 for (i in 0 until historyArr.length()) {
                     val o = historyArr.optJSONObject(i) ?: continue
                     val tid = o.optString("trackId").ifBlank { continue }
+                    val ts = o.optLong("timestamp", System.currentTimeMillis())
+                    val key = tid to ts
+                    if (!existingKeys.add(key)) continue
                     dao.insertListeningEvent(
                         ListeningEventEntity(
                             trackId = tid,
@@ -282,7 +290,7 @@ class BackupRestoreManager(
                             artist = o.optString("artist"),
                             artworkUrl = o.optString("artworkUrl"),
                             durationListenedMs = o.optLong("durationListenedMs", 30_000L),
-                            timestamp = o.optLong("timestamp", System.currentTimeMillis())
+                            timestamp = ts
                         )
                     )
                     historyCount++

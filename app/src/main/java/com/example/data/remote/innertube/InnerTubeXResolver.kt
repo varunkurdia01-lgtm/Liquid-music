@@ -108,8 +108,41 @@ object InnerTubeXResolver {
         override suspend fun close() {}
     }
 
+    @Volatile
+    private var activeProxy: java.net.Proxy = java.net.Proxy.NO_PROXY
+
+    private val dynamicProxySelector = object : java.net.ProxySelector() {
+        override fun select(uri: java.net.URI?): MutableList<java.net.Proxy> = mutableListOf(activeProxy)
+        override fun connectFailed(uri: java.net.URI?, sa: java.net.SocketAddress?, ioe: java.io.IOException?) {}
+    }
+
+    fun configureProxy(enabled: Boolean, proxyUrl: String) {
+        if (!enabled || proxyUrl.isBlank()) {
+            activeProxy = java.net.Proxy.NO_PROXY
+            return
+        }
+        activeProxy = runCatching {
+            val trimmed = proxyUrl.trim()
+            val normalized = if (trimmed.contains("://")) trimmed else "http://$trimmed"
+            val parsed = java.net.URI(normalized)
+            val host = parsed.host ?: return@runCatching java.net.Proxy.NO_PROXY
+            val type = if (parsed.scheme.equals("socks", true) || parsed.scheme.equals("socks5", true)) {
+                java.net.Proxy.Type.SOCKS
+            } else {
+                java.net.Proxy.Type.HTTP
+            }
+            val port = if (parsed.port > 0) parsed.port else if (type == java.net.Proxy.Type.SOCKS) 1080 else 8080
+            java.net.Proxy(type, java.net.InetSocketAddress(host, port))
+        }.getOrDefault(java.net.Proxy.NO_PROXY)
+    }
+
     private val http: HttpClient by lazy {
         HttpClient(OkHttp) {
+            engine {
+                config {
+                    proxySelector(dynamicProxySelector)
+                }
+            }
             install(ContentNegotiation) {
                 json(
                     Json {
@@ -255,7 +288,6 @@ object InnerTubeXResolver {
         }.onFailure {
             if (it is CancellationException) throw it
             Log.w(TAG, "InnerTubeX direct pass failed for $videoId: ${it.message}")
-            return null
         }.getOrNull()
 
         if (stream == null || stream.sabrBootstrap != null || !stream.audioUrl.startsWith("http")) {

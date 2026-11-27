@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -20,10 +21,12 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -49,6 +52,7 @@ import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Pause
@@ -58,6 +62,7 @@ import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
@@ -96,12 +101,17 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -111,7 +121,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.size.Precision
 import com.example.domain.model.LyricLine
 import com.example.domain.model.LyricsAlignStyle
 import com.example.domain.model.LyricsSearchCandidate
@@ -134,6 +147,7 @@ import com.example.ui.glass.LiquidGlassButton
 import com.example.ui.glass.LiquidGlassSurface
 import com.example.ui.glass.LiquidGlassToggle
 import com.example.ui.glass.LocalLiquidBackdrop
+import com.example.ui.glass.MiniPlayerPillPhysicsState
 import com.example.ui.glass.MiniPlayerSpringSpecs
 import com.example.ui.glass.TrackArtwork
 import com.example.ui.glass.miniPlayerPillGestures
@@ -148,7 +162,12 @@ import com.example.ui.theme.ObsidianBlack
 import com.example.ui.viewmodel.PlayerUiState
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+
+private fun lerpFloat(start: Float, stop: Float, fraction: Float): Float =
+    start + (stop - start) * fraction
 
 /**
  * Floating iOS 26-style Liquid Glass Mini-Player Pill pinned cleanly above the bottom tab capsule.
@@ -162,12 +181,15 @@ import kotlinx.coroutines.launch
 fun FloatingLiquidMiniPlayer(
     playerState: PlayerUiState,
     isLiked: Boolean,
+    swipeToSongEnabled: Boolean = true,
     onExpand: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onSkipNext: () -> Unit,
     onSkipPrevious: () -> Unit,
     onToggleLike: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onBoundsInRootChanged: (Rect) -> Unit = {},
+    positionMsFlow: StateFlow<Long>? = null
 ) {
     val track = playerState.currentTrack ?: return
     val palette = LocalLiquidPalette.current
@@ -182,15 +204,6 @@ fun FloatingLiquidMiniPlayer(
         }
     }
 
-    val rawProgress = if (playerState.durationMs > 0L) {
-        (playerState.positionMs.toFloat() / playerState.durationMs.toFloat()).coerceIn(0f, 1f)
-    } else 0f
-    val animatedProgress by animateFloatAsState(
-        targetValue = rawProgress,
-        animationSpec = spring(dampingRatio = 0.86f, stiffness = 480f),
-        label = "miniPlayerProgress"
-    )
-
     val playButtonScale = remember { Animatable(1f) }
     val likeButtonScale = remember { Animatable(1f) }
     val controlScope = rememberCoroutineScope()
@@ -203,18 +216,20 @@ fun FloatingLiquidMiniPlayer(
             .fillMaxWidth()
             .padding(horizontal = 14.dp)
             .height(66.dp)
+            .animateContentSize(animationSpec = MiniPlayerSpringSpecs.LayoutSizeSpring)
             .testTag("floating_mini_player")
             .onSizeChanged { physics.pillWidthPx = it.width.toFloat() }
+            .onGloballyPositioned { coords -> onBoundsInRootChanged(coords.boundsInRoot()) }
             .graphicsLayer {
                 with(physics) { applyPillPhysics() }
             }
             .miniPlayerPillGestures(
-                key = track.id,
+                key = "${track.id}_$swipeToSongEnabled",
                 physics = physics,
                 haptic = haptic,
                 onExpand = onExpand,
-                onSkipNext = onSkipNext,
-                onSkipPrevious = onSkipPrevious
+                onSkipNext = if (swipeToSongEnabled) onSkipNext else ({}),
+                onSkipPrevious = if (swipeToSongEnabled) onSkipPrevious else ({})
             ),
         cornerRadius = 33.dp,
         tintColor = AppleGlassTokens.NeutralDarkTint,
@@ -248,7 +263,7 @@ fun FloatingLiquidMiniPlayer(
                 }
         ) {
             // Subtle directional skip detent indicator during horizontal drag
-            if (skipHintAlpha > 0.02f) {
+            if (swipeToSongEnabled && skipHintAlpha > 0.02f) {
                 val isSkippingNext = horizontalProgress < 0f
                 Icon(
                     imageVector = if (isSkippingNext) Icons.Rounded.SkipNext else Icons.Rounded.SkipPrevious,
@@ -405,27 +420,53 @@ fun FloatingLiquidMiniPlayer(
                 }
             }
 
-            // Ultra-thin luminous progress line inset neatly inside the capsule pill bottom curve
-            Box(
+            // Ultra-thin luminous progress line isolated in a leaf composable so 10Hz ticks never recompose the pill!
+            MiniPlayerProgressLine(
+                positionMsFlow = positionMsFlow,
+                fallbackPositionMs = playerState.positionMs,
+                durationMs = playerState.durationMs,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .padding(horizontal = 24.dp)
-                    .height(2.5.dp)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.08f))
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(animatedProgress)
-                        .height(2.5.dp)
-                        .clip(CircleShape)
-                        .background(
-                            Brush.horizontalGradient(listOf(palette.secondaryGlow, palette.primaryGlow))
-                        )
-                )
-            }
+            )
         }
+    }
+}
+
+@Composable
+private fun MiniPlayerProgressLine(
+    positionMsFlow: StateFlow<Long>?,
+    fallbackPositionMs: Long,
+    durationMs: Long,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalLiquidPalette.current
+    val livePos = positionMsFlow?.collectAsStateWithLifecycle()?.value ?: fallbackPositionMs
+    val rawProgress = if (durationMs > 0L) {
+        (livePos.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    } else 0f
+    val animatedProgress by animateFloatAsState(
+        targetValue = rawProgress,
+        animationSpec = spring(dampingRatio = 0.86f, stiffness = 480f),
+        label = "miniPlayerProgress"
+    )
+    val progressBrush = remember(palette.secondaryGlow, palette.primaryGlow) {
+        Brush.horizontalGradient(listOf(palette.secondaryGlow, palette.primaryGlow))
+    }
+    Box(
+        modifier = modifier
+            .height(2.5.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = 0.08f))
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(animatedProgress)
+                .height(2.5.dp)
+                .clip(CircleShape)
+                .background(progressBrush)
+        )
     }
 }
 
@@ -464,11 +505,18 @@ fun FullBleedNowPlayingScreen(
     onAdjustLyricsOffset: (Long) -> Unit = {},
     onResetLyricsOffset: () -> Unit = {},
     onSearchLyrics: (String) -> Unit = {},
-    onApplyManualLyrics: (LyricsSearchCandidate) -> Unit = {}
+    onApplyManualLyrics: (LyricsSearchCandidate) -> Unit = {},
+    onDismissDragProgress: (Float) -> Unit = {},
+    expandProgress: Float = 1f,
+    originBounds: Rect? = null,
+    positionMsFlow: StateFlow<Long>? = null
 ) {
     val track = playerState.currentTrack ?: return
     val palette = LocalLiquidPalette.current
+    val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val animScope = rememberCoroutineScope()
 
     var showLyrics by remember { mutableStateOf(false) }
     var showQueueSheet by remember { mutableStateOf(false) }
@@ -479,6 +527,25 @@ fun FullBleedNowPlayingScreen(
     val layoutStyle = soundLabSettings.playerLayoutStyle
     val bgStyle = soundLabSettings.playerBackgroundStyle
 
+    // Staggered spring choreography when unfolding from the floating mini-player pill
+    val topBarReveal = remember { Animatable(0f) }
+    val dockReveal = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        launch {
+            delay(30L)
+            topBarReveal.animateTo(1f, MiniPlayerSpringSpecs.ElementRevealSpring)
+        }
+        launch {
+            delay(55L)
+            dockReveal.animateTo(1f, MiniPlayerSpringSpecs.ElementRevealSpring)
+        }
+    }
+
+    // Interactive pull-down dismissal physics (elastic tracking + dynamic corner rounding + live scene un-recess)
+    val dismissDragY = remember { Animatable(0f) }
+    val dismissFraction = (dismissDragY.value / 240f).coerceIn(0f, 1f)
+    val dynamicCornerDp = (dismissFraction * 34f).dp
+
     BackHandler {
         when {
             showManualLyricsSheet -> showManualLyricsSheet = false
@@ -488,68 +555,163 @@ fun FullBleedNowPlayingScreen(
         }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(ObsidianBlack)
-            .pointerInput(showLyrics) {
-                if (!showLyrics) {
-                    detectVerticalDragGestures { _, dragAmount ->
-                        if (dragAmount > 32f) onDismiss()
-                    }
-                }
-            }
-            .testTag("full_now_playing_screen")
-    ) {
-        // Captured Backdrop honoring PlayerBackgroundStyle + PlayerLayoutStyle
+    val clampedExpand = expandProgress.coerceIn(0f, 1f)
+    val morphCornerDp = ((1f - clampedExpand) * 34f).dp
+    val combinedCornerDp = if (dynamicCornerDp > morphCornerDp) dynamicCornerDp else morphCornerDp
+    val rimIntensity = maxOf(dismissFraction, (1f - clampedExpand) * 1.15f).coerceIn(0f, 1f)
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val fullW = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
+        val fullH = with(density) { maxHeight.toPx() }.coerceAtLeast(1f)
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .layerBackdrop(nowPlayingBackdrop)
+                .graphicsLayer {
+                    val p = expandProgress.coerceIn(0f, 1.06f)
+                    val dismissScale = 1f - (0.085f * dismissFraction)
+
+                    val hasOrigin = originBounds != null && originBounds.width > 1f && originBounds.height > 1f
+                    val startScaleX = if (hasOrigin) (originBounds!!.width / fullW).coerceIn(0.20f, 1f) else 0.90f
+                    val startScaleY = if (hasOrigin) (originBounds!!.height / fullH).coerceIn(0.06f, 1f) else 0.16f
+                    val startTransX = if (hasOrigin) originBounds!!.center.x - (fullW * 0.5f) else 0f
+                    val startTransY = if (hasOrigin) originBounds!!.center.y - (fullH * 0.5f) else fullH * 0.36f
+
+                    val morphScaleX = lerpFloat(startScaleX, 1f, p)
+                    val morphScaleY = lerpFloat(startScaleY, 1f, p)
+                    val morphTransX = startTransX * (1f - p)
+                    val morphTransY = startTransY * (1f - p)
+
+                    scaleX = (morphScaleX * dismissScale).coerceAtLeast(0.05f)
+                    scaleY = (morphScaleY * dismissScale).coerceAtLeast(0.05f)
+                    translationX = morphTransX
+                    translationY = morphTransY + (dismissDragY.value * 0.72f)
+                    alpha = (clampedExpand / 0.18f).coerceIn(0f, 1f)
+
+                    val cornerPx = with(density) { combinedCornerDp.toPx() }
+                    if (cornerPx > 0.5f) {
+                        shape = RoundedCornerShape(combinedCornerDp)
+                        clip = true
+                    }
+                }
+                .background(ObsidianBlack)
+                .drawWithContent {
+                    drawContent()
+                    if (rimIntensity > 0.02f) {
+                        val cornerPx = with(density) { combinedCornerDp.toPx() }
+                        drawRoundRect(
+                            brush = Brush.verticalGradient(
+                                listOf(
+                                    Color.White.copy(alpha = 0.44f * rimIntensity),
+                                    palette.primaryGlow.copy(alpha = 0.26f * rimIntensity),
+                                    Color.White.copy(alpha = 0.12f * rimIntensity)
+                                )
+                            ),
+                            cornerRadius = CornerRadius(cornerPx, cornerPx),
+                            style = Stroke(width = 1.4.dp.toPx())
+                        )
+                    }
+                }
+                .pointerInput(showLyrics) {
+                    if (!showLyrics) {
+                        var rawDragY = 0f
+                        detectVerticalDragGestures(
+                            onDragStart = { rawDragY = 0f },
+                            onDragEnd = {
+                                val shouldDismiss = rawDragY > 140f || dismissDragY.value > 115f
+                                rawDragY = 0f
+                                if (shouldDismiss) {
+                                    onDismissDragProgress(0f)
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    animScope.launch {
+                                        dismissDragY.animateTo(0f, MiniPlayerSpringSpecs.PlayerMorphCollapse)
+                                    }
+                                    onDismiss()
+                                } else {
+                                    animScope.launch {
+                                        dismissDragY.animateTo(0f, MiniPlayerSpringSpecs.DismissSnapBack)
+                                        onDismissDragProgress(0f)
+                                    }
+                                }
+                            },
+                            onDragCancel = {
+                                rawDragY = 0f
+                                animScope.launch {
+                                    dismissDragY.animateTo(0f, MiniPlayerSpringSpecs.DismissSnapBack)
+                                    onDismissDragProgress(0f)
+                                }
+                            },
+                            onVerticalDrag = { _, dragAmount ->
+                                rawDragY = (rawDragY + dragAmount).coerceAtLeast(0f)
+                                val damped = MiniPlayerPillPhysicsState.rubberBand(rawDragY, limit = 340f)
+                                animScope.launch {
+                                    dismissDragY.snapTo(damped)
+                                }
+                                onDismissDragProgress((damped / 240f).coerceIn(0f, 1f))
+                            }
+                        )
+                    }
+                }
+                .testTag("full_now_playing_screen")
         ) {
-            when (bgStyle) {
-                PlayerBackgroundStyle.PURE_BLACK -> {
-                    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF04060B)))
-                }
-                PlayerBackgroundStyle.LIQUID_GLASS -> {
-                    LiquidAuroraCanvas(intensity = 1.15f)
-                    if (track.artworkUrl.isNotBlank() && layoutStyle == PlayerLayoutStyle.APPLE_FULL_BLEED) {
-                        AsyncImage(
-                            model = track.artworkUrl,
-                            contentDescription = track.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .graphicsLayer { alpha = if (showLyrics) 0.18f else 0.72f }
-                        )
+            // Captured Backdrop honoring PlayerBackgroundStyle + PlayerLayoutStyle
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .layerBackdrop(nowPlayingBackdrop)
+            ) {
+                when (bgStyle) {
+                    PlayerBackgroundStyle.PURE_BLACK -> {
+                        Box(modifier = Modifier.fillMaxSize().background(Color(0xFF04060B)))
                     }
-                }
-                PlayerBackgroundStyle.BLUR -> {
-                    if (track.artworkUrl.isNotBlank()) {
-                        AsyncImage(
-                            model = track.artworkUrl,
-                            contentDescription = track.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .blur(if (showLyrics || layoutStyle != PlayerLayoutStyle.APPLE_FULL_BLEED) 42.dp else 14.dp)
-                                .graphicsLayer { alpha = if (showLyrics) 0.34f else 0.72f }
-                        )
-                    } else {
-                        LiquidAuroraCanvas(intensity = 1.0f)
+                    PlayerBackgroundStyle.LIQUID_GLASS -> {
+                        LiquidAuroraCanvas(intensity = 1.15f)
+                        if (track.artworkUrl.isNotBlank() && layoutStyle == PlayerLayoutStyle.APPLE_FULL_BLEED) {
+                            AsyncImage(
+                                model = track.artworkUrl,
+                                contentDescription = track.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer { alpha = if (showLyrics) 0.18f else 0.72f }
+                            )
+                        }
                     }
-                }
-                PlayerBackgroundStyle.GRADIENT -> {
-                    if (track.artworkUrl.isNotBlank() && layoutStyle == PlayerLayoutStyle.APPLE_FULL_BLEED) {
-                        AsyncImage(
-                            model = track.artworkUrl,
-                            contentDescription = track.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .graphicsLayer { alpha = if (showLyrics) 0.24f else 0.94f }
-                        )
-                    } else {
+                    PlayerBackgroundStyle.BLUR -> {
+                        if (track.artworkUrl.isNotBlank()) {
+                            val heavyBlur = showLyrics || layoutStyle != PlayerLayoutStyle.APPLE_FULL_BLEED
+                            val blurReq = remember(track.artworkUrl, heavyBlur) {
+                                ImageRequest.Builder(context)
+                                    .data(track.artworkUrl)
+                                    .size(if (heavyBlur) 220 else 540)
+                                    .precision(Precision.INEXACT)
+                                    .crossfade(180)
+                                    .build()
+                            }
+                            AsyncImage(
+                                model = blurReq,
+                                contentDescription = track.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .blur(if (heavyBlur) 42.dp else 14.dp)
+                                    .graphicsLayer { alpha = if (showLyrics) 0.34f else 0.72f }
+                            )
+                        } else {
+                            LiquidAuroraCanvas(intensity = 1.0f)
+                        }
+                    }
+                    PlayerBackgroundStyle.GRADIENT -> {
+                        if (track.artworkUrl.isNotBlank() && layoutStyle == PlayerLayoutStyle.APPLE_FULL_BLEED) {
+                            AsyncImage(
+                                model = track.artworkUrl,
+                                contentDescription = track.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer { alpha = if (showLyrics) 0.24f else 0.94f }
+                            )
+                        } else {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -595,17 +757,24 @@ fun FullBleedNowPlayingScreen(
                     .padding(horizontal = 20.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // Floating Liquid Glass Top Bar
+                // Floating Liquid Glass Top Bar (springs softly down into place on expansion)
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .graphicsLayer {
+                            val r = (topBarReveal.value * ((clampedExpand - 0.25f) / 0.75f).coerceIn(0f, 1f))
+                            alpha = r.coerceIn(0f, 1f)
+                            translationY = -with(density) { 18.dp.toPx() } * (1f - r)
+                        },
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     LiquidGlassButton(
                         onClick = onDismiss,
                         cornerRadius = 18.dp,
+                        useLiveBackdrop = true,
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(48.dp)
                             .testTag("now_playing_collapse_button")
                     ) {
                         Icon(
@@ -644,8 +813,9 @@ fun FullBleedNowPlayingScreen(
                     LiquidGlassButton(
                         onClick = { showQueueSheet = true },
                         cornerRadius = 18.dp,
+                        useLiveBackdrop = true,
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(48.dp)
                             .testTag("now_playing_queue_button")
                     ) {
                         Icon(
@@ -668,7 +838,8 @@ fun FullBleedNowPlayingScreen(
                         if (lyricsVisible) {
                             SyncedLyricsPane(
                                 lyricsState = playerState.lyricsState,
-                                positionMs = playerState.positionMs,
+                                positionMsFlow = positionMsFlow,
+                                fallbackPositionMs = playerState.positionMs,
                                 lyricsOffsetMs = soundLabSettings.lyricsOffsetMs,
                                 lyricsAlignment = soundLabSettings.lyricsAlignment,
                                 lyricsFontSizeSp = soundLabSettings.lyricsFontSizeSp,
@@ -686,7 +857,32 @@ fun FullBleedNowPlayingScreen(
                                 }
                             )
                         } else {
-                            Box(modifier = Modifier.fillMaxSize()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .pointerInput(track.id, soundLabSettings.swipeToSongEnabled) {
+                                        if (soundLabSettings.swipeToSongEnabled) {
+                                            var totalDragX = 0f
+                                            detectHorizontalDragGestures(
+                                                onDragStart = { totalDragX = 0f },
+                                                onDragCancel = { totalDragX = 0f },
+                                                onDragEnd = {
+                                                    if (totalDragX < -100f) {
+                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                        onSkipNext()
+                                                    } else if (totalDragX > 100f) {
+                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                        onSkipPrevious()
+                                                    }
+                                                    totalDragX = 0f
+                                                },
+                                                onHorizontalDrag = { _, dragAmount ->
+                                                    totalDragX += dragAmount
+                                                }
+                                            )
+                                        }
+                                    }
+                            ) {
                                 if (layoutStyle != PlayerLayoutStyle.APPLE_FULL_BLEED) {
                                     val artSize = if (layoutStyle == PlayerLayoutStyle.ECHO_MATERIAL) 286.dp else 264.dp
                                     val artCorner = if (layoutStyle == PlayerLayoutStyle.ECHO_MATERIAL) 28.dp else 32.dp
@@ -694,9 +890,15 @@ fun FullBleedNowPlayingScreen(
                                         artworkUrl = track.artworkUrl,
                                         contentDescription = track.title,
                                         cornerRadius = artCorner,
+                                        contentScale = if (soundLabSettings.cropAlbumArt) ContentScale.Crop else ContentScale.Fit,
                                         modifier = Modifier
                                             .size(artSize)
                                             .align(Alignment.Center)
+                                            .graphicsLayer {
+                                                val artScale = 0.84f + 0.16f * clampedExpand
+                                                scaleX = artScale
+                                                scaleY = artScale
+                                            }
                                     )
                                 }
 
@@ -719,7 +921,7 @@ fun FullBleedNowPlayingScreen(
                                             IconButton(
                                                 onClick = onRetryTrack,
                                                 modifier = Modifier
-                                                    .size(34.dp)
+                                                    .size(48.dp)
                                                     .testTag("now_playing_retry_button")
                                             ) {
                                                 Icon(Icons.Rounded.Refresh, contentDescription = "Retry stream", tint = FrostWhite)
@@ -737,6 +939,7 @@ fun FullBleedNowPlayingScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .animateContentSize(animationSpec = MiniPlayerSpringSpecs.LayoutSizeSpring)
                             .padding(horizontal = 18.dp, vertical = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
@@ -745,7 +948,9 @@ fun FullBleedNowPlayingScreen(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
+                            Column(
+                                modifier = Modifier.weight(1f)
+                            ) {
                                 Text(
                                     text = track.title,
                                     style = MaterialTheme.typography.headlineMedium,
@@ -765,7 +970,7 @@ fun FullBleedNowPlayingScreen(
                             AnimatedLikeButton(
                                 isLiked = isLiked,
                                 onClick = onToggleLike,
-                                size = 42.dp,
+                                size = 48.dp,
                                 iconSize = 21.dp,
                                 modifier = Modifier.testTag("now_playing_like_button")
                             )
@@ -797,9 +1002,10 @@ fun FullBleedNowPlayingScreen(
                             }
                         }
 
-                        // Echo Animated Seekbar (Squiggly / Wavy / Slim)
+                        // Echo Animated Seekbar (Squiggly / Wavy / Slim) — isolated 10Hz collector
                         LiquidScrubBar(
-                            positionMs = playerState.positionMs,
+                            positionMsFlow = positionMsFlow,
+                            fallbackPositionMs = playerState.positionMs,
                             durationMs = playerState.durationMs,
                             isPlaying = playerState.isPlaying,
                             sliderStyle = soundLabSettings.playerSliderStyle,
@@ -839,6 +1045,7 @@ fun FullBleedNowPlayingScreen(
                                 onClick = onTogglePlayPause,
                                 accentGlow = true,
                                 cornerRadius = 32.dp,
+                                useLiveBackdrop = true,
                                 modifier = Modifier
                                     .size(66.dp)
                                     .testTag("now_playing_play_pause")
@@ -887,6 +1094,51 @@ fun FullBleedNowPlayingScreen(
                             }
                         }
 
+                        if (soundLabSettings.showSeekButtons) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterHorizontally),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        val currentPos = positionMsFlow?.value ?: playerState.positionMs
+                                        onSeekTo((currentPos - 10_000L).coerceAtLeast(0L))
+                                    },
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("now_playing_seek_back_10")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Replay10,
+                                        contentDescription = "Seek back 10 seconds",
+                                        tint = FrostWhite,
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        val maxDuration = playerState.durationMs.coerceAtLeast(0L)
+                                        val currentPos = positionMsFlow?.value ?: playerState.positionMs
+                                        val target = currentPos + 10_000L
+                                        onSeekTo(if (maxDuration > 0L) target.coerceAtMost(maxDuration) else target)
+                                    },
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("now_playing_seek_forward_10")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Forward10,
+                                        contentDescription = "Seek forward 10 seconds",
+                                        tint = FrostWhite,
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                }
+                            }
+                        }
+
                         // Bottom Action Strip: Lyrics + Music DNA + Radio + Sound Lab
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -899,7 +1151,7 @@ fun FullBleedNowPlayingScreen(
                                 cornerRadius = 16.dp,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(40.dp)
+                                    .height(48.dp)
                                     .testTag("now_playing_lyrics_toggle")
                             ) {
                                 Row(
@@ -922,7 +1174,7 @@ fun FullBleedNowPlayingScreen(
                                 cornerRadius = 16.dp,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(40.dp)
+                                    .height(48.dp)
                                     .testTag("now_playing_dna_button")
                             ) {
                                 Row(
@@ -941,7 +1193,7 @@ fun FullBleedNowPlayingScreen(
                                     cornerRadius = 16.dp,
                                     modifier = Modifier
                                         .weight(1f)
-                                        .height(40.dp)
+                                        .height(48.dp)
                                         .testTag("now_playing_radio_button")
                                 ) {
                                     Row(
@@ -963,7 +1215,7 @@ fun FullBleedNowPlayingScreen(
                                 cornerRadius = 16.dp,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(40.dp)
+                                    .height(48.dp)
                                     .testTag("now_playing_soundlab_shortcut")
                             ) {
                                 Row(
@@ -985,9 +1237,17 @@ fun FullBleedNowPlayingScreen(
                     }
                 }
 
+                val dockMotionModifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        val r = (dockReveal.value * ((clampedExpand - 0.15f) / 0.85f).coerceIn(0f, 1f))
+                        alpha = (0.30f + 0.70f * r).coerceIn(0f, 1f)
+                        translationY = with(density) { 22.dp.toPx() } * (1f - r)
+                    }
+
                 if (layoutStyle == PlayerLayoutStyle.ECHO_MATERIAL) {
                     EchoSurfaceCard(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = dockMotionModifier,
                         cornerRadius = 28.dp,
                         elevated = true,
                         accentBorder = palette.primaryGlow.copy(alpha = 0.25f)
@@ -996,7 +1256,7 @@ fun FullBleedNowPlayingScreen(
                     }
                 } else {
                     LiquidGlassSurface(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = dockMotionModifier,
                         cornerRadius = 30.dp,
                         tintColor = Color(0xFF0A0F1F),
                         surfaceAlpha = 0.76f,
@@ -1006,6 +1266,7 @@ fun FullBleedNowPlayingScreen(
                     }
                 }
             }
+        }
         }
     }
 
@@ -1217,13 +1478,15 @@ fun FullBleedNowPlayingScreen(
 
 @Composable
 private fun LiquidScrubBar(
-    positionMs: Long,
+    positionMsFlow: StateFlow<Long>?,
+    fallbackPositionMs: Long,
     durationMs: Long,
     isPlaying: Boolean,
     sliderStyle: PlayerSliderStyle,
     onSeekTo: (Long) -> Unit
 ) {
     val palette = LocalLiquidPalette.current
+    val positionMs = positionMsFlow?.collectAsStateWithLifecycle()?.value ?: fallbackPositionMs
     val safeDuration = durationMs.coerceAtLeast(1L)
     val liveFraction = (positionMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
 
@@ -1253,7 +1516,8 @@ private fun LiquidScrubBar(
 @Composable
 private fun SyncedLyricsPane(
     lyricsState: LyricsState,
-    positionMs: Long,
+    positionMsFlow: StateFlow<Long>?,
+    fallbackPositionMs: Long,
     lyricsOffsetMs: Long,
     lyricsAlignment: LyricsAlignStyle,
     lyricsFontSizeSp: Float,
@@ -1266,6 +1530,7 @@ private fun SyncedLyricsPane(
 ) {
     val palette = LocalLiquidPalette.current
     val listState = rememberLazyListState()
+    val positionMs = positionMsFlow?.collectAsStateWithLifecycle()?.value ?: fallbackPositionMs
     val effectivePositionMs = (positionMs + lyricsOffsetMs).coerceAtLeast(0L)
     val fontSizeInt = lyricsFontSizeSp.toInt().coerceIn(14, 34)
 
@@ -1328,20 +1593,27 @@ private fun SyncedLyricsPane(
 
                 // Manual Lyrics Picker Trigger
                 Box(
+                    contentAlignment = Alignment.Center,
                     modifier = Modifier
+                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                         .clip(CircleShape)
-                        .background(Color(0x6612182B))
-                        .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
                         .clickable(onClick = onOpenManualSearch)
-                        .padding(horizontal = 9.dp, vertical = 5.dp)
                         .testTag("lyrics_manual_search_button")
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    Box(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(Color(0x6612182B))
+                            .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
                     ) {
-                        Icon(Icons.Rounded.Search, contentDescription = "Search lyrics", tint = FrostWhite, modifier = Modifier.size(13.dp))
-                        Text("Pick", style = MaterialTheme.typography.labelSmall, color = FrostWhite)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(Icons.Rounded.Search, contentDescription = "Search lyrics", tint = FrostWhite, modifier = Modifier.size(13.dp))
+                            Text("Pick", style = MaterialTheme.typography.labelSmall, color = FrostWhite)
+                        }
                     }
                 }
             }
@@ -1352,7 +1624,7 @@ private fun SyncedLyricsPane(
                     accentGlow = lyricsState.showTranslation,
                     cornerRadius = 16.dp,
                     modifier = Modifier
-                        .height(34.dp)
+                        .height(48.dp)
                         .testTag("lyrics_translate_button")
                 ) {
                     Row(
@@ -1517,22 +1789,29 @@ private fun OffsetPill(
 ) {
     val palette = LocalLiquidPalette.current
     Box(
+        contentAlignment = Alignment.Center,
         modifier = Modifier
+            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
             .clip(CircleShape)
-            .background(if (highlighted) palette.primaryGlow.copy(alpha = 0.22f) else Color(0x5512182B))
-            .border(
-                1.dp,
-                if (highlighted) palette.primaryGlow.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.12f),
-                CircleShape
-            )
             .clickable(onClick = onClick)
-            .padding(horizontal = 9.dp, vertical = 4.dp)
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (highlighted) palette.primaryGlow else FrostWhite
-        )
+        Box(
+            modifier = Modifier
+                .clip(CircleShape)
+                .background(if (highlighted) palette.primaryGlow.copy(alpha = 0.22f) else Color(0x5512182B))
+                .border(
+                    1.dp,
+                    if (highlighted) palette.primaryGlow.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.12f),
+                    CircleShape
+                )
+                .padding(horizontal = 10.dp, vertical = 6.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (highlighted) palette.primaryGlow else FrostWhite
+            )
+        }
     }
 }
 
@@ -1672,7 +1951,7 @@ private fun QueueSheetContent(
                 onClick = onOpenSaveQueue,
                 cornerRadius = 14.dp,
                 modifier = Modifier
-                    .height(38.dp)
+                    .height(48.dp)
                     .testTag("queue_save_playlist_button")
             ) {
                 Row(
@@ -1766,18 +2045,18 @@ private fun QueueSheetContent(
                         AnimatedWaveformBars(isPlaying = isPlaying, modifier = Modifier.padding(end = 6.dp))
                     }
                     if (idx > 0) {
-                        IconButton(onClick = { onMoveItem(idx, idx - 1) }, modifier = Modifier.size(34.dp)) {
-                            Icon(Icons.Rounded.ArrowUpward, contentDescription = "Move up", tint = MistSecondary, modifier = Modifier.size(18.dp))
+                        IconButton(onClick = { onMoveItem(idx, idx - 1) }, modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Rounded.ArrowUpward, contentDescription = "Move up", tint = MistSecondary, modifier = Modifier.size(20.dp))
                         }
                     }
                     if (idx < queue.lastIndex) {
-                        IconButton(onClick = { onMoveItem(idx, idx + 1) }, modifier = Modifier.size(34.dp)) {
-                            Icon(Icons.Rounded.ArrowDownward, contentDescription = "Move down", tint = MistSecondary, modifier = Modifier.size(18.dp))
+                        IconButton(onClick = { onMoveItem(idx, idx + 1) }, modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Rounded.ArrowDownward, contentDescription = "Move down", tint = MistSecondary, modifier = Modifier.size(20.dp))
                         }
                     }
                     if (!isCurrent) {
-                        IconButton(onClick = { onRemoveItem(idx) }, modifier = Modifier.size(34.dp)) {
-                            Icon(Icons.Rounded.Close, contentDescription = "Remove", tint = LuminousRose.copy(alpha = 0.85f), modifier = Modifier.size(18.dp))
+                        IconButton(onClick = { onRemoveItem(idx) }, modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Rounded.Close, contentDescription = "Remove", tint = LuminousRose.copy(alpha = 0.85f), modifier = Modifier.size(20.dp))
                         }
                     }
                 }

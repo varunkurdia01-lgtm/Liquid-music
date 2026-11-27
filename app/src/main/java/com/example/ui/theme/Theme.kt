@@ -11,6 +11,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.example.domain.model.GlassQualityTier
@@ -43,48 +44,52 @@ fun LiquidMusicTheme(
 ) {
     val animPrimary by animateColorAsState(
         targetValue = targetPalette.primaryGlow,
-        animationSpec = tween(durationMillis = 700),
+        animationSpec = tween(durationMillis = 350),
         label = "palettePrimary"
     )
     val animSecondary by animateColorAsState(
         targetValue = targetPalette.secondaryGlow,
-        animationSpec = tween(durationMillis = 700),
+        animationSpec = tween(durationMillis = 350),
         label = "paletteSecondary"
     )
     val animAurora by animateColorAsState(
         targetValue = targetPalette.deepAurora,
-        animationSpec = tween(durationMillis = 700),
+        animationSpec = tween(durationMillis = 350),
         label = "paletteAurora"
     )
 
-    val animatedPalette = LiquidDynamicPalette(
-        primaryGlow = animPrimary,
-        secondaryGlow = animSecondary,
-        deepAurora = animAurora
-    )
+    val animatedPalette = remember(animPrimary, animSecondary, animAurora) {
+        LiquidDynamicPalette(
+            primaryGlow = animPrimary,
+            secondaryGlow = animSecondary,
+            deepAurora = animAurora
+        )
+    }
 
-    val colorScheme = darkColorScheme(
-        primary = animPrimary,
-        onPrimary = ObsidianBlack,
-        primaryContainer = animAurora.copy(alpha = 0.45f),
-        onPrimaryContainer = FrostWhite,
-        secondary = animSecondary,
-        onSecondary = ObsidianBlack,
-        secondaryContainer = SmokedGlassElevated,
-        onSecondaryContainer = FrostWhite,
-        tertiary = LuminousRose,
-        onTertiary = FrostWhite,
-        background = ObsidianBlack,
-        onBackground = FrostWhite,
-        surface = DeepVoid,
-        onSurface = FrostWhite,
-        surfaceVariant = SmokedGlassSurface,
-        onSurfaceVariant = MistSecondary,
-        outline = GlassRimBright,
-        outlineVariant = GlassRimSubtle,
-        error = LuminousRose,
-        onError = FrostWhite
-    )
+    val colorScheme = remember(animPrimary, animSecondary, animAurora) {
+        darkColorScheme(
+            primary = animPrimary,
+            onPrimary = ObsidianBlack,
+            primaryContainer = animAurora.copy(alpha = 0.45f),
+            onPrimaryContainer = FrostWhite,
+            secondary = animSecondary,
+            onSecondary = ObsidianBlack,
+            secondaryContainer = SmokedGlassElevated,
+            onSecondaryContainer = FrostWhite,
+            tertiary = LuminousRose,
+            onTertiary = FrostWhite,
+            background = ObsidianBlack,
+            onBackground = FrostWhite,
+            surface = DeepVoid,
+            onSurface = FrostWhite,
+            surfaceVariant = SmokedGlassSurface,
+            onSurfaceVariant = MistSecondary,
+            outline = GlassRimBright,
+            outlineVariant = GlassRimSubtle,
+            error = LuminousRose,
+            onError = FrostWhite
+        )
+    }
 
     CompositionLocalProvider(
         LocalLiquidPalette provides animatedPalette,

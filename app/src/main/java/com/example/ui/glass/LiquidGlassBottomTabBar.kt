@@ -43,6 +43,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,6 +78,7 @@ import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.Shadow
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -121,8 +123,21 @@ fun LiquidGlassBottomTabBar(
     var barWidthPx by remember { mutableFloatStateOf(0f) }
     var isDragging by remember { mutableStateOf(false) }
     var isTapGliding by remember { mutableStateOf(false) }
+    var tapGlideJob by remember { mutableStateOf<Job?>(null) }
     var dragVelocityX by remember { mutableFloatStateOf(0f) }
     var lastHapticIndex by remember { mutableIntStateOf(selectedTab.ordinal) }
+
+    val currentSelectedTab by rememberUpdatedState(selectedTab)
+    val currentOnTabSelected by rememberUpdatedState(onTabSelected)
+
+    fun triggerTapGlide() {
+        tapGlideJob?.cancel()
+        isTapGliding = true
+        tapGlideJob = scope.launch {
+            delay(260L)
+            isTapGliding = false
+        }
+    }
 
     val lensPosition = remember { Animatable(selectedTab.ordinal.toFloat()) }
 
@@ -130,11 +145,7 @@ fun LiquidGlassBottomTabBar(
         if (!isDragging) {
             val target = selectedTab.ordinal.toFloat()
             if (abs(lensPosition.value - target) > 0.05f) {
-                isTapGliding = true
-                launch {
-                    delay(260L)
-                    isTapGliding = false
-                }
+                triggerTapGlide()
             }
             lensPosition.animateTo(
                 targetValue = target,
@@ -208,10 +219,15 @@ fun LiquidGlassBottomTabBar(
 
                         var movedSignificantly = false
                         val startX = down.position.x
-                        isDragging = true
+                        val downTabIdx = ((startX - padPx) / tabWidth).toInt().coerceIn(0, tabCount - 1)
+                        tapGlideJob?.cancel()
                         isTapGliding = false
+                        // Only swell droplet immediately on press when pressing the currently active tab;
+                        // when pressing another tab, let the droplet glide cleanly on drag or release.
+                        if (downTabIdx == currentSelectedTab.ordinal) {
+                            isDragging = true
+                        }
 
-                        // Snap/glide toward touched tab immediately on press-hold if dragging begins
                         while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull() ?: break
@@ -232,13 +248,9 @@ fun LiquidGlassBottomTabBar(
                                 val chosenTab = tabs[targetIdx]
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 if (abs(lensPosition.value - targetIdx.toFloat()) > 0.1f) {
-                                    isTapGliding = true
-                                    scope.launch {
-                                        delay(260L)
-                                        isTapGliding = false
-                                    }
+                                    triggerTapGlide()
                                 }
-                                onTabSelected(chosenTab)
+                                currentOnTabSelected(chosenTab)
                                 scope.launch {
                                     lensPosition.animateTo(
                                         targetValue = targetIdx.toFloat(),
@@ -256,6 +268,7 @@ fun LiquidGlassBottomTabBar(
                             val dxFromStart = abs(change.position.x - startX)
                             if (dxFromStart > 8f) {
                                 movedSignificantly = true
+                                isDragging = true
                                 change.consume()
                             }
 
@@ -288,9 +301,10 @@ fun LiquidGlassBottomTabBar(
             // LAYER 1: Frosted Apple iOS 26 Outer Dock + Resting Pill + Tab Icons/Labels
             // Captured into `tabsBackdrop` so Layer 2's crystal droplet refracts them!
             // =========================================================================
+            val captureTabsForDroplet = useRealLensDroplet && (isLensActive || dropletMorph > 0.01f)
             val dockModifier = Modifier
                 .fillMaxSize()
-                .layerBackdrop(tabsBackdrop)
+                .then(if (captureTabsForDroplet) Modifier.layerBackdrop(tabsBackdrop) else Modifier)
                 .then(
                     if (useRealDockBackdrop && sceneBackdrop != null) {
                         val enableDockLens = glassTier == GlassQualityTier.ULTRA_AGSL &&

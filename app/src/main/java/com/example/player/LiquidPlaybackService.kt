@@ -8,8 +8,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -28,6 +32,7 @@ import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import com.example.MainActivity
 import com.example.core.LiquidAppContainer
+import com.example.domain.model.AudioQuality
 import com.example.domain.model.SoundLabSettings
 import com.example.domain.model.Track
 import com.example.widget.LiquidMusicWidgetProvider
@@ -57,21 +62,39 @@ object PlaybackDspBridge {
     var currentSettings: SoundLabSettings = SoundLabSettings()
         private set
 
+    @Volatile
+    var sleepFadeVolume: Float = 1.0f
+        internal set
+
+    fun setSleepFadeVolume(volume: Float) {
+        val clamped = volume.coerceIn(0.05f, 1.0f)
+        sleepFadeVolume = clamped
+        val player = activePlayer ?: return
+        val applyBlock = {
+            runCatching { player.volume = clamped }
+        }
+        if (Looper.myLooper() == player.applicationLooper) {
+            applyBlock()
+        } else {
+            Handler(player.applicationLooper).post { applyBlock() }
+        }
+    }
+
     @OptIn(UnstableApi::class)
     fun applySoundLab(settings: SoundLabSettings) {
         currentSettings = settings
         soundLabController.applySettings(settings)
-        activePlayer?.let { player ->
-            val safeSpeed = settings.playbackSpeed.coerceIn(0.5f, 2.0f)
-            val safePitch = settings.playbackPitch.coerceIn(0.5f, 2.0f)
-            player.playbackParameters = PlaybackParameters(safeSpeed, safePitch)
+        val player = activePlayer ?: return
+        val applyToPlayer = {
             runCatching {
+                val safeSpeed = settings.playbackSpeed.coerceIn(0.5f, 2.0f)
+                val safePitch = settings.playbackPitch.coerceIn(0.5f, 2.0f)
+                player.playbackParameters = PlaybackParameters(safeSpeed, safePitch)
                 player.skipSilenceEnabled = settings.skipSilenceEnabled
-            }
-            player.pauseAtEndOfMediaItems = !settings.gaplessPlaybackEnabled
+                // Never pause automatically at end of queue items when gapless is toggled off
+                player.pauseAtEndOfMediaItems = false
 
-            // Enforce Audio Hardware Offload preference
-            runCatching {
+                // Enforce Audio Hardware Offload preference
                 val offloadMode = if (settings.audioOffloadEnabled && !settings.eightDEnabled) {
                     TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_ENABLED
                 } else {
@@ -86,6 +109,11 @@ object PlaybackDspBridge {
                     .setAudioOffloadPreferences(offloadPrefs)
                     .build()
             }
+        }
+        if (Looper.myLooper() == player.applicationLooper) {
+            applyToPlayer()
+        } else {
+            Handler(player.applicationLooper).post { applyToPlayer() }
         }
     }
 }
@@ -152,7 +180,7 @@ class LiquidPlaybackService : MediaLibraryService() {
             context = applicationContext,
             okHttpClient = container.okHttpClient,
             musicRepository = container.musicRepository,
-            qualityProvider = { PlaybackDspBridge.currentSettings.audioQuality },
+            qualityProvider = { resolveEffectiveAudioQuality() },
             maxCacheSizeMb = PlaybackDspBridge.currentSettings.maxCacheSizeMb
         )
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
@@ -207,6 +235,10 @@ class LiquidPlaybackService : MediaLibraryService() {
                     .firstOrNull() ?: return
                 val currentItem = player.currentMediaItem ?: return
                 if (currentItem.localConfiguration?.mimeType == MimeTypes.APPLICATION_M3U8) return
+                if (hlsRedirect.headers.isNotEmpty()) {
+                    LiquidAudioCache.registerUrlHeaders(hlsRedirect.hlsUri, hlsRedirect.headers)
+                }
+                LiquidAudioCache.markHlsRedirectPending(hlsRedirect.trackId)
                 val idx = player.currentMediaItemIndex
                 val pos = player.currentPosition.coerceAtLeast(0L)
                 val hlsItem = currentItem.buildUpon()
@@ -294,14 +326,31 @@ class LiquidPlaybackService : MediaLibraryService() {
         )
     }
 
+    private fun resolveEffectiveAudioQuality(): AudioQuality {
+        val settings = PlaybackDspBridge.currentSettings
+        if (settings.dataSaverEnabled) return AudioQuality.LOW_96
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val net = cm?.activeNetwork
+        val caps = if (net != null) cm.getNetworkCapabilities(net) else null
+        val isUnmeteredWifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
+        return if (isUnmeteredWifi || caps == null) settings.audioQuality else settings.cellularAudioQuality
+    }
+
     private fun startSpatialAuraLoop() {
         auraModulationJob?.cancel()
         auraModulationJob = serviceScope.launch {
             var phase = 0.0
+            var modulatingVolume = false
             while (isActive) {
                 val settings = PlaybackDspBridge.currentSettings
                 val p = PlaybackDspBridge.activePlayer
-                if (p != null && p.isPlaying) {
+                val sleepVol = PlaybackDspBridge.sleepFadeVolume
+                val needsVolumeControl = settings.eightDEnabled ||
+                    settings.crossfadeSeconds > 0 ||
+                    sleepVol < 0.999f
+
+                if (p != null && p.isPlaying && needsVolumeControl) {
                     val crossfadeMs = settings.crossfadeSeconds * 1000L
                     val duration = p.duration
                     val pos = p.currentPosition
@@ -322,7 +371,13 @@ class LiquidPlaybackService : MediaLibraryService() {
                         targetVolume *= auraWave
                     }
 
-                    p.volume = targetVolume.coerceIn(0.1f, 1.0f)
+                    targetVolume *= sleepVol
+                    p.volume = targetVolume.coerceIn(0.05f, 1.0f)
+                    modulatingVolume = true
+                } else if (p != null && modulatingVolume) {
+                    // Restore nominal volume once when modulation ends so Android audio focus ducking isn't overwritten
+                    p.volume = sleepVol.coerceIn(0.05f, 1.0f)
+                    modulatingVolume = false
                 }
                 delay(120L)
             }

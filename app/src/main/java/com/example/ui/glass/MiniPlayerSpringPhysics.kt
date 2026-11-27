@@ -21,6 +21,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -86,6 +87,48 @@ object MiniPlayerSpringSpecs {
     val SheetDismissOffset: SpringSpec<IntOffset> = spring(
         dampingRatio = 0.86f,
         stiffness = 600f
+    )
+
+    /** Primary spring driving the Liquid Glass pill-to-full-screen container layout morph on expand. */
+    val PlayerMorphExpand: SpringSpec<Float> = spring(
+        dampingRatio = 0.78f,
+        stiffness = 430f
+    )
+
+    /** Crisp high-stiffness spring driving the full-screen player back into the mini-player pill. */
+    val PlayerMorphCollapse: SpringSpec<Float> = spring(
+        dampingRatio = 0.84f,
+        stiffness = 500f
+    )
+
+    /** Spring for subtle iOS 26 background scene depth recess when full player expands. */
+    val BackdropRecessScale: SpringSpec<Float> = spring(
+        dampingRatio = 0.82f,
+        stiffness = 440f
+    )
+
+    /** High-stiffness spring for ducking the floating bottom tab bar out of view on expansion. */
+    val TabBarDuckOffset: SpringSpec<Float> = spring(
+        dampingRatio = 0.80f,
+        stiffness = 540f
+    )
+
+    /** Staggered spring choreography for secondary Now Playing chrome unfolding. */
+    val ElementRevealSpring: SpringSpec<Float> = spring(
+        dampingRatio = 0.78f,
+        stiffness = 500f
+    )
+
+    /** Spring for smooth dynamic layout size changes inside the player glass dock. */
+    val LayoutSizeSpring: SpringSpec<IntSize> = spring(
+        dampingRatio = 0.76f,
+        stiffness = 520f
+    )
+
+    /** Elastic spring-back when an interactive pull-down dismiss gesture is cancelled. */
+    val DismissSnapBack: SpringSpec<Float> = spring(
+        dampingRatio = 0.74f,
+        stiffness = 560f
     )
 }
 
@@ -243,7 +286,7 @@ class MiniPlayerPillPhysicsState(
         private const val MAX_DRAG_UP_PX = 96f
         private const val MAX_DRAG_DOWN_PX = 24f
 
-        private fun rubberBand(value: Float, limit: Float): Float {
+        fun rubberBand(value: Float, limit: Float): Float {
             if (limit <= 0f) return 0f
             return limit * tanh((value / limit).toDouble()).toFloat()
         }

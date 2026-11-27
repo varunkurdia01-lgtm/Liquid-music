@@ -17,8 +17,10 @@ import com.example.ui.theme.LiquidDynamicPalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-class PaletteExtractor(private val context: Context) {
-    private val imageLoader by lazy { ImageLoader(context) }
+class PaletteExtractor(
+    private val context: Context,
+    private val imageLoader: ImageLoader
+) {
 
     suspend fun extractPalette(artworkUrl: String): LiquidDynamicPalette = withContext(Dispatchers.IO) {
         if (artworkUrl.isBlank()) {

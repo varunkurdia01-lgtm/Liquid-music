@@ -113,14 +113,54 @@ class EchoExtensionManager(
     fun sanitizeUrl(raw: String): String {
         var u = raw.trim()
         if (u.isBlank()) return ""
-        if (!u.startsWith("http://") && !u.startsWith("https://")) {
+        if (u.startsWith("http://", ignoreCase = true)) {
+            return ""
+        }
+        if (!u.startsWith("https://", ignoreCase = true)) {
             u = "https://$u"
         }
         u = u.removeSuffix("/")
         if (u.endsWith("/manifest.json", ignoreCase = true)) {
             u = u.substringBeforeLast("/manifest.json")
         }
-        return u.removeSuffix("/")
+        u = u.removeSuffix("/")
+        return if (isSafePublicHost(u)) u else ""
+    }
+
+    fun isSafePublicHost(url: String): Boolean {
+        val parsed = runCatching { Uri.parse(url) }.getOrNull() ?: return false
+        if (!parsed.scheme.equals("https", ignoreCase = true)) return false
+        val host = parsed.host?.lowercase()?.trim().orEmpty()
+        if (host.isBlank()) return false
+        if (host == "localhost" || host == "0.0.0.0" || host == "::1" ||
+            host.endsWith(".local") || host.endsWith(".internal") || host.endsWith(".localhost")
+        ) {
+            return false
+        }
+        // Reject raw IPv4 private / loopback / link-local ranges
+        val ipv4 = Regex("""^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$""").matchEntire(host)
+        if (ipv4 != null) {
+            val a = ipv4.groupValues[1].toIntOrNull() ?: return false
+            val b = ipv4.groupValues[2].toIntOrNull() ?: return false
+            if (a == 0 || a == 10 || a == 127) return false
+            if (a == 169 && b == 254) return false
+            if (a == 192 && b == 168) return false
+            if (a == 172 && b in 16..31) return false
+        }
+        return true
+    }
+
+    private fun resolvesToSafePublicAddresses(url: String): Boolean {
+        if (!isSafePublicHost(url)) return false
+        val host = runCatching { Uri.parse(url).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: return false
+        val addresses = runCatching { InetAddress.getAllByName(host) }.getOrNull() ?: return false
+        return addresses.isNotEmpty() && addresses.none { addr ->
+            addr.isAnyLocalAddress ||
+                addr.isLoopbackAddress ||
+                addr.isLinkLocalAddress ||
+                addr.isSiteLocalAddress ||
+                addr.isMulticastAddress
+        }
     }
 
     /**
@@ -128,7 +168,12 @@ class EchoExtensionManager(
      */
     suspend fun inspectAddon(baseUrl: String): Result<EchoAddonConfig> = withContext(Dispatchers.IO) {
         val clean = sanitizeUrl(baseUrl)
-        if (clean.isBlank()) return@withContext Result.failure(IllegalArgumentException("Enter a valid addon URL"))
+        if (clean.isBlank()) {
+            return@withContext Result.failure(IllegalArgumentException("Enter a valid public HTTPS addon URL"))
+        }
+        if (!resolvesToSafePublicAddresses(clean)) {
+            return@withContext Result.failure(IllegalArgumentException("Private or local network addon URLs are blocked"))
+        }
         val start = System.currentTimeMillis()
         runCatching {
             val req = Request.Builder().url("$clean/manifest.json").build()
@@ -269,12 +314,13 @@ class EchoExtensionManager(
     }
 
     private fun fetchStreamFromAddon(baseUrl: String, remoteTrackId: String, qualityParam: String): StreamResolution? {
+        if (!isSafePublicHost(baseUrl)) return null
         val streamEndpoint = "$baseUrl/stream/${Uri.encode(remoteTrackId)}?quality=$qualityParam"
         return runCatching {
             httpClient.newCall(Request.Builder().url(streamEndpoint).build()).execute().use { resp ->
                 if (!resp.isSuccessful) return@use null
                 val json = JSONObject(resp.body?.string().orEmpty())
-                val url = json.optString("url").takeIf { it.startsWith("http") } ?: return@use null
+                val url = json.optString("url").takeIf { isSafePublicHost(it) } ?: return@use null
                 val format = json.optString("format").ifBlank { json.optString("codec") }
                 val isFlac = format.contains("flac", ignoreCase = true)
                 val isAlac = format.contains("alac", ignoreCase = true)

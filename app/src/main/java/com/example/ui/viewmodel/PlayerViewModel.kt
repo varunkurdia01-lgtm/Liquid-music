@@ -3,6 +3,7 @@ package com.example.ui.viewmodel
 import android.content.ComponentName
 import android.net.Uri
 import android.util.Log
+import androidx.compose.runtime.Immutable
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -49,6 +50,7 @@ import kotlinx.coroutines.launch
 
 private const val TAG = "PlayerViewModel"
 
+@Immutable
 data class PlayerUiState(
     val currentTrack: Track? = null,
     val queue: List<Track> = emptyList(),
@@ -81,6 +83,9 @@ class PlayerViewModel(
     private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
 
+    private val _positionMs = MutableStateFlow(0L)
+    val positionMs: StateFlow<Long> = _positionMs.asStateFlow()
+
     val likedTrackIds: StateFlow<Set<String>> = container.dao.observeLikedTrackIds()
         .map { it.toSet() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
@@ -101,6 +106,7 @@ class PlayerViewModel(
     private var radioAppendJob: Job? = null
     private var dnaJob: Job? = null
     private var persistQueueJob: Job? = null
+    private var preloadNextJob: Job? = null
     private var hasAttemptedQueueRestore: Boolean = false
 
     private var pendingQueue: Pair<List<Track>, Int>? = null
@@ -134,12 +140,14 @@ class PlayerViewModel(
             val ctrl = mediaController ?: return
             val queue = _uiState.value.queue
             val mediaId = mediaItem?.mediaId
-            // Strictly match playing mediaId to queue entry so displayed track ALWAYS equals playing audio!
-            val idx = if (!mediaId.isNullOrBlank()) {
-                val matchedIdx = queue.indexOfFirst { it.id == mediaId }
-                if (matchedIdx >= 0) matchedIdx else ctrl.currentMediaItemIndex
+            // Prefer ExoPlayer's active index when its mediaId matches so duplicate tracks in queue highlight accurately
+            val ctrlIdx = ctrl.currentMediaItemIndex
+            val idx = if (ctrlIdx in queue.indices && (mediaId.isNullOrBlank() || queue[ctrlIdx].id == mediaId)) {
+                ctrlIdx
+            } else if (!mediaId.isNullOrBlank()) {
+                queue.indexOfFirst { it.id == mediaId }.takeIf { it >= 0 } ?: ctrlIdx
             } else {
-                ctrl.currentMediaItemIndex
+                ctrlIdx
             }
             if (idx in queue.indices) {
                 val track = queue[idx]
@@ -183,7 +191,7 @@ class PlayerViewModel(
             val hlsRedirectCause = generateSequence<Throwable>(error) { it.cause }
                 .filterIsInstance<com.example.player.HlsRedirectIOException>()
                 .firstOrNull()
-            if (hlsRedirectCause != null) {
+            if (hlsRedirectCause != null || LiquidAudioCache.consumeHlsRedirectPending(activeTrack?.id)) {
                 // LiquidPlaybackService already handles the immediate HlsMediaSource switch on the player
                 _uiState.update { it.copy(isBuffering = true, playbackError = null) }
                 return
@@ -217,7 +225,7 @@ class PlayerViewModel(
                     .build()
                 _uiState.update { it.copy(isBuffering = true, playbackError = null) }
                 ctrl.replaceMediaItem(safeIdx, hlsItem)
-                ctrl.seekTo(safeIdx, state.positionMs.coerceAtLeast(0L))
+                ctrl.seekTo(safeIdx, _positionMs.value.coerceAtLeast(0L))
                 ctrl.prepare()
                 ctrl.play()
                 return
@@ -242,7 +250,7 @@ class PlayerViewModel(
                     viewModelScope.launch {
                         delay(350L)
                         val safeIdx = state.currentIndex.coerceIn(0, (ctrl.mediaItemCount - 1).coerceAtLeast(0))
-                        ctrl.seekTo(safeIdx, state.positionMs.coerceAtLeast(0L))
+                        ctrl.seekTo(safeIdx, _positionMs.value.coerceAtLeast(0L))
                         ctrl.prepare()
                         ctrl.play()
                     }
@@ -364,6 +372,7 @@ class PlayerViewModel(
                 controller.pause() // Ready in mini-player without blasting audio unexpectedly on startup
 
                 val activeTrack = savedTracks[safeIdx]
+                _positionMs.value = safePos
                 _uiState.update {
                     it.copy(
                         queue = savedTracks,
@@ -389,6 +398,7 @@ class PlayerViewModel(
         val snapshot = _uiState.value
         val queue = snapshot.queue
         if (queue.isEmpty()) return
+        val currentPosMs = _positionMs.value.coerceAtLeast(0L)
         persistQueueJob?.cancel()
         persistQueueJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             delay(350L)
@@ -402,7 +412,7 @@ class PlayerViewModel(
                 container.preferencesRepository.saveQueueCursor(
                     SavedQueueCursor(
                         activeIndex = snapshot.currentIndex.coerceIn(0, (limited.size - 1).coerceAtLeast(0)),
-                        positionMs = snapshot.positionMs.coerceAtLeast(0L),
+                        positionMs = currentPosMs,
                         shuffleEnabled = snapshot.shuffleEnabled,
                         repeatMode = snapshot.repeatMode
                     )
@@ -415,24 +425,28 @@ class PlayerViewModel(
         viewModelScope.launch {
             while (isActive) {
                 val ctrl = mediaController
+                val playing = ctrl?.isPlaying == true
                 if (ctrl != null) {
                     val pos = ctrl.currentPosition.coerceAtLeast(0L)
+                    if (_positionMs.value != pos) {
+                        _positionMs.value = pos
+                    }
                     val dur = ctrl.duration.takeIf { it > 0L }
                         ?: _uiState.value.currentTrack?.durationMs
                         ?: 0L
-                    _uiState.update { state ->
-                        if (state.positionMs != pos || state.durationMs != dur) {
-                            state.copy(positionMs = pos, durationMs = dur)
-                        } else state
+                    if (_uiState.value.durationMs != dur) {
+                        _uiState.update { state ->
+                            if (state.durationMs != dur) state.copy(durationMs = dur) else state
+                        }
                     }
-                    if (ctrl.isPlaying) {
+                    if (playing) {
                         accumulatedListenMs += 100L
                         if (accumulatedListenMs >= 20_000L && lastLoggedTrackId != _uiState.value.currentTrack?.id) {
                             commitListeningEventIfQualified()
                         }
                     }
                 }
-                delay(100L) // Smooth 10Hz ticker for fluid word-by-word karaoke sweep
+                delay(if (playing) 100L else 500L)
             }
         }
     }
@@ -469,6 +483,7 @@ class PlayerViewModel(
 
         val mediaItems = enrichedTracks.map { buildMediaItem(it) }
         commitListeningEventIfQualified()
+        _positionMs.value = 0L
         _uiState.update {
             it.copy(
                 queue = enrichedTracks,
@@ -562,20 +577,29 @@ class PlayerViewModel(
             playTrack(track)
             return
         }
-        val insertIdx = (state.currentIndex + 1).coerceIn(0, state.queue.size)
         val updated = state.queue.toMutableList()
+        var currentIdx = state.currentIndex.coerceIn(0, (updated.size - 1).coerceAtLeast(0))
         if (currentSettings.preventDuplicateTracksInQueue) {
             val dupIdx = updated.indexOfFirst { it.id == track.id }
-            if (dupIdx >= 0 && dupIdx != state.currentIndex) {
+            if (dupIdx >= 0 && dupIdx != currentIdx) {
                 updated.removeAt(dupIdx)
                 mediaController?.removeMediaItem(dupIdx)
+                if (dupIdx < currentIdx) {
+                    currentIdx = (currentIdx - 1).coerceAtLeast(0)
+                }
             }
         }
-        val safeInsert = insertIdx.coerceIn(0, updated.size)
+        val safeInsert = (currentIdx + 1).coerceIn(0, updated.size)
         updated.add(safeInsert, track)
         container.musicRepository.registerTrack(track)
         mediaController?.addMediaItem(safeInsert, buildMediaItem(track))
-        _uiState.update { it.copy(queue = updated, statusToast = "Playing \"${track.title}\" next") }
+        _uiState.update {
+            it.copy(
+                queue = updated,
+                currentIndex = currentIdx,
+                statusToast = "Playing \"${track.title}\" next"
+            )
+        }
         persistPlaybackQueueDebounced()
     }
 
@@ -634,7 +658,7 @@ class PlayerViewModel(
         container.musicRepository.registerTrack(track)
         val ctrl = mediaController ?: return
         val idx = state.currentIndex.coerceIn(0, (ctrl.mediaItemCount - 1).coerceAtLeast(0))
-        ctrl.seekTo(idx, state.positionMs)
+        ctrl.seekTo(idx, _positionMs.value.coerceAtLeast(0L))
         ctrl.prepare()
         ctrl.play()
     }
@@ -656,7 +680,7 @@ class PlayerViewModel(
         }
     }
 
-    fun toggleLyricsTranslation(targetLanguage: String = "English") {
+    fun toggleLyricsTranslation(targetLanguage: String = currentSettings.translateTargetLanguage.ifBlank { "English" }) {
         val state = _uiState.value
         val track = state.currentTrack ?: return
         val lyrics = state.lyricsState
@@ -679,8 +703,14 @@ class PlayerViewModel(
             it.copy(lyricsState = lyrics.copy(isTranslating = true, translationError = null))
         }
 
+        val translateMode = currentSettings.translateMode.ifBlank { "Natural / Poetic" }
         viewModelScope.launch {
-            val result = container.lyricsRepository.translateLyrics(track.id, lyrics, targetLanguage)
+            val result = container.lyricsRepository.translateLyrics(
+                trackId = track.id,
+                currentState = lyrics,
+                targetLanguage = targetLanguage,
+                translateMode = translateMode
+            )
             result.fold(
                 onSuccess = { translated ->
                     _uiState.update { it.copy(lyricsState = translated) }
@@ -734,7 +764,7 @@ class PlayerViewModel(
     fun seekTo(positionMs: Long) {
         val clamped = positionMs.coerceAtLeast(0L)
         mediaController?.seekTo(clamped)
-        _uiState.update { it.copy(positionMs = clamped) }
+        _positionMs.value = clamped
     }
 
     fun toggleShuffle() {
@@ -794,6 +824,7 @@ class PlayerViewModel(
 
     fun setSleepTimer(option: SleepTimerOption) {
         sleepTimerJob?.cancel()
+        PlaybackDspBridge.setSleepFadeVolume(1.0f)
         val minutes = option.minutes
         if (option == SleepTimerOption.OFF || minutes == null) {
             _uiState.update { it.copy(sleepTimerOption = SleepTimerOption.OFF, sleepTimerRemainingSec = 0) }
@@ -812,11 +843,11 @@ class PlayerViewModel(
                 remaining--
                 _uiState.update { it.copy(sleepTimerRemainingSec = remaining) }
                 if (remaining in 1..5) {
-                    PlaybackDspBridge.activePlayer?.volume = (remaining / 5f).coerceIn(0.1f, 1f)
+                    PlaybackDspBridge.setSleepFadeVolume((remaining / 5f).coerceIn(0.1f, 1f))
                 }
             }
             mediaController?.pause()
-            PlaybackDspBridge.activePlayer?.volume = 1f
+            PlaybackDspBridge.setSleepFadeVolume(1.0f)
             _uiState.update { it.copy(sleepTimerOption = SleepTimerOption.OFF, sleepTimerRemainingSec = 0) }
         }
     }
@@ -912,6 +943,20 @@ class PlayerViewModel(
                 }
             }
         }
+
+        // Pre-resolve the next track's playback stream in the background when preloadNextSongEnabled is active
+        preloadNextJob?.cancel()
+        if (currentSettings.preloadNextSongEnabled) {
+            val nextTrack = _uiState.value.queue.getOrNull(index + 1)
+            if (nextTrack != null && nextTrack.sourceType != SourceType.LOCAL && nextTrack.downloadedFilePath.isBlank()) {
+                preloadNextJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    delay(1_200L)
+                    runCatching {
+                        container.musicRepository.resolvePlaybackStream(nextTrack, currentQuality)
+                    }
+                }
+            }
+        }
     }
 
     private fun commitListeningEventIfQualified() {
@@ -963,9 +1008,62 @@ class PlayerViewModel(
             .build()
     }
 
+    private fun persistPlaybackQueueImmediate() {
+        if (!currentSettings.persistentQueueEnabled) return
+        val snapshot = _uiState.value
+        val queue = snapshot.queue
+        if (queue.isEmpty()) return
+        val limited = queue.take(150)
+        val activeIdx = snapshot.currentIndex.coerceIn(0, (limited.size - 1).coerceAtLeast(0))
+        val posMs = _positionMs.value.coerceAtLeast(0L)
+        val shuffle = snapshot.shuffleEnabled
+        val repeat = snapshot.repeatMode
+        container.applicationScope.launch {
+            runCatching {
+                container.dao.upsertTracks(limited.map { TrackEntity.fromDomain(it) })
+                container.dao.clearSavedQueue()
+                container.dao.insertQueueEntries(
+                    limited.mapIndexed { idx, t -> PlaybackQueueEntity(position = idx, trackId = t.id) }
+                )
+                container.preferencesRepository.saveQueueCursor(
+                    SavedQueueCursor(
+                        activeIndex = activeIdx,
+                        positionMs = posMs,
+                        shuffleEnabled = shuffle,
+                        repeatMode = repeat
+                    )
+                )
+            }
+        }
+    }
+
+    private fun commitListeningEventImmediate() {
+        val track = _uiState.value.currentTrack ?: return
+        if (accumulatedListenMs < 15_000L || lastLoggedTrackId == track.id) return
+        val durationToLog = accumulatedListenMs.coerceAtLeast(15_000L)
+        lastLoggedTrackId = track.id
+        container.applicationScope.launch {
+            runCatching {
+                val s = container.preferencesRepository.soundLabSettings.first()
+                if (s.pauseListenHistory) return@runCatching
+                container.dao.upsertTrack(TrackEntity.fromDomain(track))
+                container.dao.insertListeningEvent(
+                    ListeningEventEntity(
+                        trackId = track.id,
+                        title = track.title,
+                        artist = track.artist,
+                        artworkUrl = track.artworkUrl,
+                        durationListenedMs = durationToLog
+                    )
+                )
+            }
+        }
+    }
+
     override fun onCleared() {
-        commitListeningEventIfQualified()
-        persistPlaybackQueueDebounced()
+        commitListeningEventImmediate()
+        persistPlaybackQueueImmediate()
+        PlaybackDspBridge.setSleepFadeVolume(1.0f)
         mediaController?.removeListener(playerListener)
         controllerFuture?.let { MediaController.releaseFuture(it) }
         super.onCleared()
